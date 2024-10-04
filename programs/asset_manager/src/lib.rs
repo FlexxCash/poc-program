@@ -4,6 +4,13 @@ use solana_program::pubkey::Pubkey;
 
 declare_id!("91hM5ZdHVbH7tH1a21QHRmPEFkHWS532DfcpGPBUkdAF");
 
+const DAYS_IN_YEAR: u64 = 365;
+const APY_PRECISION: u64 = 10000;
+const MIN_LOCK_PERIOD: u64 = 1;
+const MAX_LOCK_PERIOD: u64 = 365;
+const MIN_PRODUCT_PRICE: u64 = 10;
+const MAX_PRODUCT_PRICE: u64 = 10000;
+
 #[program]
 pub mod asset_manager {
     use super::*;
@@ -14,6 +21,9 @@ pub mod asset_manager {
         state.is_paused = false;
         state.jupsol_mint = jupsol_mint;
         state.authority = ctx.accounts.authority.key();
+        state.current_apy = 762; // Initialize APY to 7.62%
+        state.last_apy_update = Clock::get()?.unix_timestamp;
+        state.product_price = 1798; // Initialize product price to 1798
         Ok(())
     }
 
@@ -83,13 +93,11 @@ pub mod asset_manager {
             .checked_sub(locked_xxusd_amount)
             .ok_or(AssetManagerError::CalculationError)?;
 
-        // Check minting limit
         require!(
             total_xxusd_amount <= ctx.accounts.state.minting_limit,
             AssetManagerError::MintingLimitExceeded
         );
 
-        // Mint xxUSD
         let seeds = &[
             ctx.accounts.state.to_account_info().key.as_ref(),
             &[ctx.accounts.state.nonce],
@@ -105,9 +113,6 @@ pub mod asset_manager {
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
         token::mint_to(cpi_ctx, total_xxusd_amount)?;
 
-        // TODO: Implement locking logic with LockManager contract
-
-        // Transfer xxUSD to user
         let transfer_accounts = token::Transfer {
             from: ctx.accounts.xxusd_vault.to_account_info(),
             to: ctx.accounts.user_xxusd_account.to_account_info(),
@@ -120,7 +125,6 @@ pub mod asset_manager {
         );
         token::transfer(transfer_ctx, user_xxusd_amount)?;
 
-        // Update user deposit record
         ctx.accounts.user_deposit.xxusd_amount = ctx.accounts.user_deposit.xxusd_amount
             .checked_add(user_xxusd_amount)
             .ok_or(AssetManagerError::CalculationError)?;
@@ -136,11 +140,84 @@ pub mod asset_manager {
 
         Ok(())
     }
+
+    pub fn calculate_lock_period(ctx: Context<CalculateLockPeriod>, product_price: u64, asset_value: u64) -> Result<u64> {
+        let apy = ctx.accounts.state.current_apy;
+        require!(apy > 0, AssetManagerError::InvalidAPY);
+
+        msg!("Calculating lock period with product_price: {}, asset_value: {}, apy: {}", product_price, asset_value, apy);
+
+        let lock_period = (product_price as u128)
+            .checked_mul(DAYS_IN_YEAR as u128)
+            .and_then(|result| result.checked_mul(APY_PRECISION as u128))
+            .and_then(|result| {
+                let denominator = (asset_value as u128).checked_mul(apy as u128)
+                    .ok_or(AssetManagerError::CalculationError).ok()?;
+                result.checked_div(denominator)
+            })
+            .ok_or(AssetManagerError::CalculationError)?;
+
+        let lock_period = lock_period.clamp(MIN_LOCK_PERIOD as u128, MAX_LOCK_PERIOD as u128) as u64;
+
+        emit!(LockPeriodCalculatedEvent {
+            product_price,
+            asset_value,
+            apy,
+            lock_period,
+        });
+
+        msg!("Lock period calculated: {} days", lock_period);
+
+        Ok(lock_period)
+    }
+
+    pub fn update_apy(ctx: Context<UpdateAPY>, new_apy: u64) -> Result<()> {
+        require!(new_apy > 0, AssetManagerError::InvalidAPY);
+        
+        let state = &mut ctx.accounts.state;
+        let old_apy = state.current_apy;
+        state.current_apy = new_apy;
+        state.last_apy_update = Clock::get()?.unix_timestamp;
+
+        emit!(APYUpdatedEvent {
+            old_apy,
+            new_apy,
+            timestamp: state.last_apy_update,
+        });
+
+        msg!("APY updated from {} to {}", old_apy, new_apy);
+
+        Ok(())
+    }
+
+    pub fn set_product_price(ctx: Context<SetProductPrice>, new_price: u64) -> Result<()> {
+        // 驗證價格的合理性
+        require!(
+            new_price >= MIN_PRODUCT_PRICE && new_price <= MAX_PRODUCT_PRICE,
+            AssetManagerError::InvalidPrice
+        );
+
+        let old_price = ctx.accounts.state.product_price;
+        
+        // 更新商品價格
+        ctx.accounts.state.product_price = new_price;
+
+        // 記錄價格變更
+        emit!(PriceChangedEvent {
+            old_price,
+            new_price,
+            authority: ctx.accounts.authority.key(),
+        });
+
+        msg!("Product price updated from {} to {}", old_price, new_price);
+
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = authority, space = 8 + 8 + 32 + 32 + 8 + 1)]
+    #[account(init, payer = authority, space = 8 + 8 + 32 + 32 + 8 + 1 + 8 + 8 + 8)]
     pub state: Account<'info, ProgramState>,
     #[account(mut)]
     pub authority: Signer<'info>,
@@ -212,6 +289,28 @@ pub struct MintAndDistributeXxUSD<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+pub struct CalculateLockPeriod<'info> {
+    #[account(constraint = state.is_initialized @ AssetManagerError::UninitializedState)]
+    pub state: Account<'info, ProgramState>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateAPY<'info> {
+    #[account(mut, constraint = state.is_initialized @ AssetManagerError::UninitializedState)]
+    pub state: Account<'info, ProgramState>,
+    #[account(constraint = authority.key() == state.authority @ AssetManagerError::UnauthorizedAccount)]
+    pub authority: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct SetProductPrice<'info> {
+    #[account(mut, constraint = state.is_initialized @ AssetManagerError::UninitializedState)]
+    pub state: Account<'info, ProgramState>,
+    #[account(constraint = authority.key() == state.authority @ AssetManagerError::UnauthorizedAccount)]
+    pub authority: Signer<'info>,
+}
+
 #[account]
 pub struct UserDeposit {
     pub amount: u64,
@@ -226,6 +325,9 @@ pub struct ProgramState {
     pub authority: Pubkey,
     pub minting_limit: u64,
     pub nonce: u8,
+    pub current_apy: u64,
+    pub last_apy_update: i64,
+    pub product_price: u64,
 }
 
 #[error_code]
@@ -250,6 +352,10 @@ pub enum AssetManagerError {
     OracleError,
     #[msg("Minting limit exceeded")]
     MintingLimitExceeded,
+    #[msg("Invalid APY")]
+    InvalidAPY,
+    #[msg("Invalid price")]
+    InvalidPrice,
 }
 
 #[event]
@@ -265,6 +371,28 @@ pub struct MintAndDistributeEvent {
     pub total_amount: u64,
     pub locked_amount: u64,
     pub user_amount: u64,
+}
+
+#[event]
+pub struct LockPeriodCalculatedEvent {
+    pub product_price: u64,
+    pub asset_value: u64,
+    pub apy: u64,
+    pub lock_period: u64,
+}
+
+#[event]
+pub struct APYUpdatedEvent {
+    pub old_apy: u64,
+    pub new_apy: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct PriceChangedEvent {
+    pub old_price: u64,
+    pub new_price: u64,
+    pub authority: Pubkey,
 }
 
 fn get_asset_price(oracle: &AccountInfo, asset_mint: &Pubkey) -> Result<u64> {

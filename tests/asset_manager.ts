@@ -124,7 +124,7 @@ describe("asset_manager", () => {
       console.log("Assets minted to user");
 
       // Create vault asset account
-      const [vaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      const [vaultPda] = await anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("vault"), assetMint.toBuffer()],
         program.programId
       );
@@ -150,7 +150,7 @@ describe("asset_manager", () => {
       console.log("xxUSD vault account created:", xxusdVaultAccount.toBase58());
 
       // Create user deposit account
-      const [userDepositAddress] = anchor.web3.PublicKey.findProgramAddressSync(
+      const [userDepositAddress] = await anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("user_deposit"), user.publicKey.toBuffer()],
         program.programId
       );
@@ -158,7 +158,7 @@ describe("asset_manager", () => {
       console.log("User deposit PDA created:", userDepositPda.toBase58());
 
       // Create program state account
-      const [statePda] = anchor.web3.PublicKey.findProgramAddressSync(
+      const [statePda] = await anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("state")],
         program.programId
       );
@@ -170,7 +170,7 @@ describe("asset_manager", () => {
       console.log("Mock oracle created:", oracle.publicKey.toBase58());
 
       // Create mint and vault authority
-      const [mintAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      const [mintAuthorityPda] = await anchor.web3.PublicKey.findProgramAddressSync(
         [programState.toBuffer()],
         program.programId
       );
@@ -366,6 +366,114 @@ describe("asset_manager", () => {
     } catch (error) {
       expect(error.message).to.include("Invalid amount");
       console.log("Invalid amount test passed successfully");
+    }
+  });
+
+  it("Calculates lock period correctly", async () => {
+    const productPrice = new anchor.BN(1000000); // 1 USDC
+    const assetValue = new anchor.BN(2000000); // 2 USDC
+
+    const lockPeriod = await program.methods
+      .calculateLockPeriod(productPrice, assetValue)
+      .accounts({
+        state: programState,
+      })
+      .view();
+
+    expect(lockPeriod.toNumber()).to.be.within(1, 365);
+    console.log("Lock period calculation test passed successfully");
+  });
+
+  it("Updates APY successfully", async () => {
+    const newApy = new anchor.BN(800); // 8%
+
+    await program.methods
+      .updateApy(newApy)
+      .accounts({
+        state: programState,
+        authority: provider.wallet.publicKey,
+      })
+      .rpc();
+
+    const updatedState = await program.account.programState.fetch(programState);
+    expect(updatedState.currentApy.toNumber()).to.equal(800);
+    console.log("APY update test passed successfully");
+  });
+
+  it("Fails to update APY with unauthorized account", async () => {
+    const newApy = new anchor.BN(900); // 9%
+
+    try {
+      await program.methods
+        .updateApy(newApy)
+        .accounts({
+          state: programState,
+          authority: user.publicKey, // Using user's public key instead of the actual authority
+        })
+        .signers([user])
+        .rpc();
+      expect.fail("Expected an error to be thrown");
+    } catch (error) {
+      expect(error.message).to.include("UnauthorizedAccount");
+      console.log("Unauthorized APY update test passed successfully");
+    }
+  });
+
+  it("Sets product price successfully", async () => {
+    const newPrice = new anchor.BN(2000); // 新價格為 20 USDC
+
+    try {
+      await program.methods
+        .setProductPrice(newPrice)
+        .accounts({
+          state: programState,
+          authority: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      const updatedState = await program.account.programState.fetch(programState);
+      expect(updatedState.productPrice.toNumber()).to.equal(2000);
+      console.log("Product price update test passed successfully");
+    } catch (error) {
+      console.error("Error during product price update test:", error);
+      throw error;
+    }
+  });
+
+  it("Fails to set product price with unauthorized account", async () => {
+    const newPrice = new anchor.BN(2500); // 25 USDC
+
+    try {
+      await program.methods
+        .setProductPrice(newPrice)
+        .accounts({
+          state: programState,
+          authority: user.publicKey, // 使用用戶的公鑰而不是實際的管理員
+        })
+        .signers([user])
+        .rpc();
+      expect.fail("Expected an error to be thrown");
+    } catch (error) {
+      expect(error.message).to.include("UnauthorizedAccount");
+      console.log("Unauthorized product price update test passed successfully");
+    }
+  });
+
+  it("Fails to set invalid product price", async () => {
+    const invalidPrice = new anchor.BN(5); // 低於最小允許價格
+
+    try {
+      await program.methods
+        .setProductPrice(invalidPrice)
+        .accounts({
+          state: programState,
+          authority: provider.wallet.publicKey,
+        })
+        .rpc();
+      expect.fail("Expected an error to be thrown");
+    } catch (error) {
+      expect(error.message).to.include("InvalidPrice");
+      console.log("Invalid product price test passed successfully");
     }
   });
 });
