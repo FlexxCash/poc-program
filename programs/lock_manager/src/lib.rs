@@ -56,6 +56,86 @@ pub mod lock_manager {
 
         Ok(())
     }
+
+    pub fn release_daily_xxusd(ctx: Context<ReleaseDailyXxUSD>) -> Result<()> {
+        let lock_record = &mut ctx.accounts.lock_record;
+        let current_time = Clock::get()?.unix_timestamp;
+
+        // 驗證所有者
+        require!(lock_record.owner == ctx.accounts.user.key(), LockManagerError::InvalidOwner);
+
+        // 檢查鎖定期是否已結束
+        require!(
+            current_time < lock_record.start_time + (lock_record.lock_period as i64 * 86400),
+            LockManagerError::LockPeriodEnded
+        );
+
+        // 確保每日只能釋放一次
+        let last_release_date = lock_record.last_release_time / 86400;
+        let current_date = current_time / 86400;
+        require!(last_release_date < current_date, LockManagerError::AlreadyReleasedToday);
+
+        // 計算可釋放的金額
+        let days_since_last_release = (current_time - lock_record.last_release_time) / 86400;
+        let releasable_amount = lock_record.daily_release.saturating_mul(days_since_last_release as u64);
+        let remaining_locked_amount = lock_record.amount;
+
+        let release_amount = releasable_amount.min(remaining_locked_amount);
+
+        require!(release_amount > 0, LockManagerError::NoAmountToRelease);
+
+        // 更新鎖定記錄
+        lock_record.amount = lock_record.amount.saturating_sub(release_amount);
+        lock_record.last_release_time = current_time;
+
+        // 轉移釋放的 xxUSD 到用戶帳戶
+        let seeds = &[
+            b"lock_manager".as_ref(),
+            &[ctx.bumps.lock_manager],
+        ];
+        let signer = &[&seeds[..]];
+
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.lock_vault.to_account_info(),
+            to: ctx.accounts.user_token_account.to_account_info(),
+            authority: ctx.accounts.lock_manager.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
+        token::transfer(cpi_ctx, release_amount)?;
+
+        // 發出釋放事件
+        emit!(ReleaseEvent {
+            user: ctx.accounts.user.key(),
+            amount: release_amount,
+        });
+
+        Ok(())
+    }
+
+    pub fn check_lock_status(ctx: Context<CheckLockStatus>) -> Result<LockStatus> {
+        let lock_record = &ctx.accounts.lock_record;
+        let current_time = Clock::get()?.unix_timestamp;
+
+        let is_locked = current_time < lock_record.start_time + (lock_record.lock_period as i64 * 86400);
+        let remaining_lock_time = if is_locked {
+            (lock_record.start_time + (lock_record.lock_period as i64 * 86400)) - current_time
+        } else {
+            0
+        };
+
+        let days_since_start = (current_time - lock_record.start_time) / 86400;
+        let redeemable_amount = lock_record.daily_release.saturating_mul(days_since_start as u64).min(lock_record.amount);
+
+        let redemption_deadline = lock_record.start_time + ((lock_record.lock_period as i64 + 14) * 86400);
+
+        Ok(LockStatus {
+            is_locked,
+            remaining_lock_time,
+            redeemable_amount,
+            redemption_deadline,
+        })
+    }
 }
 
 #[derive(Accounts)]
@@ -95,6 +175,48 @@ pub struct LockXxUSD<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
+#[derive(Accounts)]
+pub struct ReleaseDailyXxUSD<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    #[account(
+        mut,
+        associated_token::mint = xxusd_mint,
+        associated_token::authority = user,
+    )]
+    pub user_token_account: Account<'info, TokenAccount>,
+    pub xxusd_mint: Account<'info, token::Mint>,
+    #[account(
+        mut,
+        associated_token::mint = xxusd_mint,
+        associated_token::authority = lock_manager,
+    )]
+    pub lock_vault: Account<'info, TokenAccount>,
+    /// CHECK: This is the LockManager PDA
+    #[account(seeds = [b"lock_manager"], bump)]
+    pub lock_manager: AccountInfo<'info>,
+    #[account(
+        mut,
+        seeds = [b"lock_record", user.key().as_ref()],
+        bump,
+    )]
+    pub lock_record: Account<'info, LockRecord>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct CheckLockStatus<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"lock_record", user.key().as_ref()],
+        bump,
+        constraint = lock_record.owner == user.key() @ LockManagerError::InvalidOwner,
+    )]
+    pub lock_record: Account<'info, LockRecord>,
+}
+
 #[account]
 pub struct LockRecord {
     pub owner: Pubkey,
@@ -103,6 +225,14 @@ pub struct LockRecord {
     pub daily_release: u64,
     pub start_time: i64,
     pub last_release_time: i64,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug)]
+pub struct LockStatus {
+    pub is_locked: bool,
+    pub remaining_lock_time: i64,
+    pub redeemable_amount: u64,
+    pub redemption_deadline: i64,
 }
 
 #[error_code]
@@ -119,6 +249,14 @@ pub enum LockManagerError {
     InsufficientBalance,
     #[msg("Invalid asset manager")]
     InvalidAssetManager,
+    #[msg("No amount to release")]
+    NoAmountToRelease,
+    #[msg("Invalid owner")]
+    InvalidOwner,
+    #[msg("Lock period has ended")]
+    LockPeriodEnded,
+    #[msg("Already released today")]
+    AlreadyReleasedToday,
 }
 
 #[event]
@@ -127,6 +265,12 @@ pub struct LockEvent {
     pub amount: u64,
     pub lock_period: u64,
     pub daily_release: u64,
+}
+
+#[event]
+pub struct ReleaseEvent {
+    pub user: Pubkey,
+    pub amount: u64,
 }
 
 // 替換為實際的 AssetManager 程序 ID
