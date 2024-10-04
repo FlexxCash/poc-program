@@ -1,16 +1,10 @@
-import * as anchor from '@project-serum/anchor';
-import { Program } from '@project-serum/anchor';
+import * as anchor from '@coral-xyz/anchor';
+import { Program } from '@coral-xyz/anchor';
 import { PriceOracle } from '../target/types/price_oracle';
 import { assert } from 'chai';
-import * as sb from "@switchboard-xyz/on-demand";
 import {
-  AnchorUtils,
-  InstructionUtils,
-  loadLookupTables,
   PullFeed,
-  asV0Tx,
-  Queue,
-  sleep,
+  loadLookupTables,
 } from "@switchboard-xyz/on-demand";
 
 describe('price_oracle', () => {
@@ -20,12 +14,12 @@ describe('price_oracle', () => {
   const program = anchor.workspace.PriceOracle as Program<PriceOracle>;
 
   let oracleAccount: anchor.web3.Keypair;
-  let feedAccount: anchor.web3.PublicKey;
+  let feedPubkey: anchor.web3.PublicKey;
 
   before(async () => {
     oracleAccount = anchor.web3.Keypair.generate();
-    // 這裡需要設置實際的 Switchboard feed 地址
-    feedAccount = new anchor.web3.PublicKey("YOUR_SWITCHBOARD_FEED_ADDRESS");
+    // 使用一個虛擬的 Switchboard feed 地址進行測試
+    feedPubkey = new anchor.web3.PublicKey("GvDMxPzN1sCj7L26YDK2HnMRXEQmQ2aemov8YBtPS7vR");
   });
 
   it('Initializes the Oracle Account', async () => {
@@ -33,52 +27,77 @@ describe('price_oracle', () => {
       .accounts({
         oracleAccount: oracleAccount.publicKey,
         authority: provider.wallet.publicKey,
-        feed: feedAccount,
-        systemProgram: anchor.web3.SystemProgram.programId,
+        feed: feedPubkey,
       })
       .signers([oracleAccount])
       .rpc();
 
     const account = await program.account.oracleAccount.fetch(oracleAccount.publicKey);
     assert.ok(account.authority.equals(provider.wallet.publicKey));
-    assert.ok(account.feed.equals(feedAccount));
+    assert.ok(account.feed.equals(feedPubkey));
     assert.equal(account.lastUpdateTimestamp.toNumber(), 0);
     assert.equal(account.cachedPrice.toNumber(), 0);
   });
 
   it('Fetches the price and uses cache', async () => {
     const connection = provider.connection;
-    const payer = (provider.wallet as anchor.Wallet).payer;
+    const wallet = provider.wallet as anchor.Wallet;
 
-    const pullFeed = await PullFeed.load(connection, feedAccount);
-    const [pullIx, responses, _, luts] = await pullFeed.fetchUpdateIx();
+    // Load the Switchboard Anchor Program
+    const switchboardProgramId = new anchor.web3.PublicKey("SW1TCH7qEPTdLsDHRgPuMQjbQxKdH2aBStViMFnt64f");
+    const switchboardIdl = await Program.fetchIdl(switchboardProgramId, provider);
+    if (!switchboardIdl) throw new Error("Failed to fetch Switchboard IDL");
+    const switchboard = new Program(switchboardIdl, provider);
 
-    const tx = await asV0Tx({
-      connection,
-      ixs: [pullIx, 
+    const feedAccount = new PullFeed(switchboard, feedPubkey);
+
+    // Get the update instruction for switchboard
+    const [pullIx, responses, success] = await feedAccount.fetchUpdateIx();
+    const lookupTables = await loadLookupTables([...responses.map((x) => x.oracle), feedAccount]);
+
+    // Set priority fee for the tx
+    const priorityFeeIx = anchor.web3.ComputeBudgetProgram.setComputeUnitPrice({
+      microLamports: 100_000,
+    });
+
+    // Get the latest context
+    const {
+      context: { slot: minContextSlot },
+      value: { blockhash, lastValidBlockHeight },
+    } = await connection.getLatestBlockhashAndContext();
+
+    // Get Transaction Message 
+    const message = new anchor.web3.TransactionMessage({
+      payerKey: wallet.publicKey,
+      recentBlockhash: blockhash,
+      instructions: [priorityFeeIx, pullIx, 
         await program.methods.getPrice("SOL")
           .accounts({
             oracleAccount: oracleAccount.publicKey,
-            feed: feedAccount,
+            feed: feedPubkey,
           })
           .instruction()
       ],
-      signers: [payer],
-      computeUnitPrice: 200_000,
-      computeUnitLimitMultiple: 1.3,
-      lookupTables: luts,
-    });
+    }).compileToV0Message(lookupTables);
+    
+    // Get Versioned Transaction
+    const vtx = new anchor.web3.VersionedTransaction(message);
+    const signed = await wallet.signTransaction(vtx);
 
-    const sim = await connection.simulateTransaction(tx, {
-      commitment: "processed",
-    });
-    const sig = await connection.sendTransaction(tx, {
-      preflightCommitment: "processed",
+    // Send the transaction via rpc 
+    const signature = await connection.sendRawTransaction(signed.serialize(), {
+      maxRetries: 0,
       skipPreflight: true,
     });
+    
+    // Wait for confirmation
+    await connection.confirmTransaction({
+      signature,
+      blockhash,
+      lastValidBlockHeight,
+    });
 
-    const simPrice = sim.value.logs.join().match(/price: (.*)/)[1];
-    console.log(`Price update: ${simPrice}\n\tTransaction sent: ${sig}`);
+    console.log(`Transaction sent: ${signature}`);
 
     // 驗證價格已更新
     const updatedAccount = await program.account.oracleAccount.fetch(oracleAccount.publicKey);
@@ -88,7 +107,7 @@ describe('price_oracle', () => {
     const cachedPrice = await program.methods.getPrice("SOL")
       .accounts({
         oracleAccount: oracleAccount.publicKey,
-        feed: feedAccount,
+        feed: feedPubkey,
       })
       .view();
 
@@ -100,7 +119,7 @@ describe('price_oracle', () => {
       await program.methods.getPrice("")
         .accounts({
           oracleAccount: oracleAccount.publicKey,
-          feed: feedAccount,
+          feed: feedPubkey,
         })
         .view();
       assert.fail('Should have thrown an error');
@@ -115,7 +134,7 @@ describe('price_oracle', () => {
       await program.methods.getPrice("SOL")
         .accounts({
           oracleAccount: uninitializedOracleAccount.publicKey,
-          feed: feedAccount,
+          feed: feedPubkey,
         })
         .view();
       assert.fail('Should have thrown an error');

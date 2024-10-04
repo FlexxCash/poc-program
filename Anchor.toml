@@ -12,6 +12,7 @@ url = "https://api.apr.dev"
 [provider]
 cluster = "localnet"
 wallet = "~/.config/solana/new_id.json"
+endpoint = "http://localhost:9900"
 
 [scripts]
 deploy = "anchor deploy"
@@ -19,3 +20,8 @@ test = "anchor test"
 
 [test]
 startup_wait = 10000
+validator_port = 9900
+
+[test.validator]
+url = "http://localhost:9900"
+rpc_port = 9900
