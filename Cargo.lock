@@ -3,6 +3,14 @@
 version = 3
 
 [[package]]
+name = "access_control"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "solana-program",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

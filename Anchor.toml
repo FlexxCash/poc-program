@@ -5,6 +5,7 @@ skip-lint = false
 [programs.localnet]
 flexxcash-poc = "3a3whekXLP4nu9HPdbrtPp6rqe1XG7WwoddhrfQXZYmj"
 price_oracle = "CzpZdoxJhQjtzG7oLgTHinsPjtMFVzRXEYWy1pn3wQ9Z"
+access_control = "7XqCdxDjk9QheBci6JQBzH8x6Y3Ny5TKPpcp8VvfgsYv"  # Replace with actual program ID
 
 [registry]
 url = "https://api.apr.dev"
