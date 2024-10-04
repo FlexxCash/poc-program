@@ -15,7 +15,7 @@ url = "https://api.apr.dev"
 [provider]
 cluster = "localnet"
 wallet = "~/.config/solana/new_id.json"
-endpoint = "http://localhost:50000"
+endpoint = "http://localhost:8899"
 
 [scripts]
 deploy = "anchor deploy"
@@ -23,8 +23,9 @@ test = "anchor test"
 
 [test]
 startup_wait = 10000
-validator_port = 50000
+validator_port = 8899
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
 
 [test.validator]
-url = "http://localhost:50000"
-rpc_port = 50000
+url = "http://localhost:8899"
+rpc_port = 8899

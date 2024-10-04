@@ -17,11 +17,16 @@ describe("asset_manager", () => {
   const program = anchor.workspace.AssetManager as Program<AssetManager>;
 
   let assetMint: anchor.web3.PublicKey;
+  let xxusdMint: anchor.web3.PublicKey;
   let userAssetAccount: anchor.web3.PublicKey;
+  let userXxusdAccount: anchor.web3.PublicKey;
   let vaultAssetAccount: anchor.web3.PublicKey;
+  let xxusdVaultAccount: anchor.web3.PublicKey;
   let userDepositPda: anchor.web3.PublicKey;
   let programState: anchor.web3.PublicKey;
   let oracle: anchor.web3.Keypair;
+  let mintAuthority: anchor.web3.PublicKey;
+  let vaultAuthority: anchor.web3.PublicKey;
 
   const user = anchor.web3.Keypair.generate();
 
@@ -77,6 +82,16 @@ describe("asset_manager", () => {
       );
       console.log("Asset mint created:", assetMint.toBase58());
 
+      // Create xxUSD mint
+      xxusdMint = await createMint(
+        provider.connection,
+        user,
+        user.publicKey,
+        null,
+        6
+      );
+      console.log("xxUSD mint created:", xxusdMint.toBase58());
+
       // Create user asset account
       const userAssetAccountInfo = await getOrCreateAssociatedTokenAccount(
         provider.connection,
@@ -86,6 +101,16 @@ describe("asset_manager", () => {
       );
       userAssetAccount = userAssetAccountInfo.address;
       console.log("User asset account created:", userAssetAccount.toBase58());
+
+      // Create user xxUSD account
+      const userXxusdAccountInfo = await getOrCreateAssociatedTokenAccount(
+        provider.connection,
+        user,
+        xxusdMint,
+        user.publicKey
+      );
+      userXxusdAccount = userXxusdAccountInfo.address;
+      console.log("User xxUSD account created:", userXxusdAccount.toBase58());
 
       // Mint some assets to user
       await mintTo(
@@ -99,7 +124,7 @@ describe("asset_manager", () => {
       console.log("Assets minted to user");
 
       // Create vault asset account
-      const [vaultPda] = await anchor.web3.PublicKey.findProgramAddressSync(
+      const [vaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("vault"), assetMint.toBuffer()],
         program.programId
       );
@@ -113,8 +138,19 @@ describe("asset_manager", () => {
       vaultAssetAccount = vaultAssetAccountInfo.address;
       console.log("Vault asset account created:", vaultAssetAccount.toBase58());
 
+      // Create xxUSD vault account
+      const xxusdVaultAccountInfo = await getOrCreateAssociatedTokenAccount(
+        provider.connection,
+        user,
+        xxusdMint,
+        vaultPda,
+        true
+      );
+      xxusdVaultAccount = xxusdVaultAccountInfo.address;
+      console.log("xxUSD vault account created:", xxusdVaultAccount.toBase58());
+
       // Create user deposit account
-      const [userDepositAddress] = await anchor.web3.PublicKey.findProgramAddressSync(
+      const [userDepositAddress] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("user_deposit"), user.publicKey.toBuffer()],
         program.programId
       );
@@ -122,7 +158,7 @@ describe("asset_manager", () => {
       console.log("User deposit PDA created:", userDepositPda.toBase58());
 
       // Create program state account
-      const [statePda] = await anchor.web3.PublicKey.findProgramAddressSync(
+      const [statePda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("state")],
         program.programId
       );
@@ -132,6 +168,15 @@ describe("asset_manager", () => {
       // Create mock oracle
       oracle = anchor.web3.Keypair.generate();
       console.log("Mock oracle created:", oracle.publicKey.toBase58());
+
+      // Create mint and vault authority
+      const [mintAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [programState.toBuffer()],
+        program.programId
+      );
+      mintAuthority = mintAuthorityPda;
+      vaultAuthority = mintAuthorityPda;
+      console.log("Mint and vault authority created:", mintAuthority.toBase58());
 
       // Initialize program state
       await program.methods
@@ -182,6 +227,73 @@ describe("asset_manager", () => {
     } catch (error) {
       console.error("Error during deposit test:", error);
       throw error;
+    }
+  });
+
+  it("Mints and distributes xxUSD successfully", async () => {
+    const assetValue = new anchor.BN(1000000); // 1 USDC worth of asset
+    const productPrice = new anchor.BN(500000); // 0.5 USDC worth of product
+
+    try {
+      await program.methods
+        .mintAndDistributeXxusd(assetValue, productPrice)
+        .accounts({
+          user: user.publicKey,
+          xxusdMint: xxusdMint,
+          xxusdVault: xxusdVaultAccount,
+          userXxusdAccount: userXxusdAccount,
+          mintAuthority: mintAuthority,
+          vaultAuthority: vaultAuthority,
+          userDeposit: userDepositPda,
+          state: programState,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([user])
+        .rpc();
+
+      // Verify minting and distribution
+      const userXxusdBalance = await provider.connection.getTokenAccountBalance(userXxusdAccount);
+      expect(userXxusdBalance.value.uiAmount).to.equal(0.5); // User should receive 0.5 xxUSD
+
+      const vaultXxusdBalance = await provider.connection.getTokenAccountBalance(xxusdVaultAccount);
+      expect(vaultXxusdBalance.value.uiAmount).to.equal(0.5); // Vault should hold 0.5 xxUSD (locked amount)
+
+      const userDepositAccount = await program.account.userDeposit.fetch(userDepositPda);
+      expect(userDepositAccount.xxusdAmount.toNumber()).to.equal(500000); // User deposit should record 0.5 xxUSD
+
+      console.log("Mint and distribute xxUSD test passed successfully");
+    } catch (error) {
+      console.error("Error during mint and distribute xxUSD test:", error);
+      throw error;
+    }
+  });
+
+  it("Fails to mint xxUSD when exceeding minting limit", async () => {
+    const assetValue = new anchor.BN(1000000000); // 1000 USDC worth of asset (assuming this exceeds the minting limit)
+    const productPrice = new anchor.BN(500000000); // 500 USDC worth of product
+
+    try {
+      await program.methods
+        .mintAndDistributeXxusd(assetValue, productPrice)
+        .accounts({
+          user: user.publicKey,
+          xxusdMint: xxusdMint,
+          xxusdVault: xxusdVaultAccount,
+          userXxusdAccount: userXxusdAccount,
+          mintAuthority: mintAuthority,
+          vaultAuthority: vaultAuthority,
+          userDeposit: userDepositPda,
+          state: programState,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([user])
+        .rpc();
+      expect.fail("Expected transaction to fail");
+    } catch (error) {
+      expect(error.message).to.include("Minting limit exceeded");
+      console.log("Minting limit test passed successfully");
     }
   });
 
@@ -256,6 +368,4 @@ describe("asset_manager", () => {
       console.log("Invalid amount test passed successfully");
     }
   });
-
-  // Add more test cases as needed
 });
