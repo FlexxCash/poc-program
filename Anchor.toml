@@ -1,0 +1,21 @@
+[features]
+seeds = false
+skip-lint = false
+
+[programs.localnet]
+flexxcash-poc = "3a3whekXLP4nu9HPdbrtPp6rqe1XG7WwoddhrfQXZYmj"
+price_oracle = "CzpZdoxJhQjtzG7oLgTHinsPjtMFVzRXEYWy1pn3wQ9Z"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/new_id.json"
+
+[scripts]
+deploy = "anchor deploy"
+test = "anchor test"
+
+[test]
+startup_wait = 10000
