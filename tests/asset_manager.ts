@@ -1,277 +1,272 @@
-import * as anchor from "@coral-xyz/anchor";
-import { Program } from "@coral-xyz/anchor";
+import { startAnchor } from "solana-bankrun";
+import { Program, Provider, Wallet } from "@coral-xyz/anchor";
 import { AssetManager } from "../target/types/asset_manager";
 import {
   TOKEN_PROGRAM_ID,
   createMint,
   getOrCreateAssociatedTokenAccount,
   mintTo,
-  createTransferInstruction,
 } from "@solana/spl-token";
 import { expect } from "chai";
+import {
+  PublicKey,
+  Keypair,
+  SystemProgram,
+  Transaction,
+  TransactionInstruction,
+  Connection,
+} from "@solana/web3.js";
+import BN from "bn.js";
 
 describe("asset_manager", () => {
-  const provider = anchor.AnchorProvider.env();
-  anchor.setProvider(provider);
+  let provider: Provider;
+  let program: Program<AssetManager>;
+  let context: any;
+  let client: any;
+  let payer: Keypair;
+  let assetMint: PublicKey;
+  let xxusdMint: PublicKey;
+  let userAssetAccount: PublicKey;
+  let userXxusdAccount: PublicKey;
+  let vaultAssetAccount: PublicKey;
+  let xxusdVaultAccount: PublicKey;
+  let userDepositPda: PublicKey;
+  let programState: PublicKey;
+  let oracle: Keypair;
+  let mintAuthority: PublicKey;
+  let vaultAuthority: PublicKey;
 
-  const program = anchor.workspace.AssetManager as Program<AssetManager>;
+  const user = Keypair.generate();
 
-  let assetMint: anchor.web3.PublicKey;
-  let xxusdMint: anchor.web3.PublicKey;
-  let userAssetAccount: anchor.web3.PublicKey;
-  let userXxusdAccount: anchor.web3.PublicKey;
-  let vaultAssetAccount: anchor.web3.PublicKey;
-  let xxusdVaultAccount: anchor.web3.PublicKey;
-  let userDepositPda: anchor.web3.PublicKey;
-  let programState: anchor.web3.PublicKey;
-  let oracle: anchor.web3.Keypair;
-  let mintAuthority: anchor.web3.PublicKey;
-  let vaultAuthority: anchor.web3.PublicKey;
-
-  const user = anchor.web3.Keypair.generate();
-
-  async function transferTokens(
-    amountUi: number,
-    mint: anchor.web3.PublicKey,
-    decimals: number,
-    from: anchor.web3.Keypair,
-    to: anchor.web3.PublicKey
-  ): Promise<string> {
-    const sender = await getOrCreateAssociatedTokenAccount(
-      provider.connection,
-      from,
-      mint,
-      from.publicKey
-    );
-    const receiver = await getOrCreateAssociatedTokenAccount(
-      provider.connection,
-      from,
-      mint,
-      to
-    );
-    const transferTokensIx = createTransferInstruction(
-      sender.address,
-      receiver.address,
-      from.publicKey,
-      uiToNative(amountUi, decimals)
-    );
-    const transaction = new anchor.web3.Transaction().add(transferTokensIx);
-    return await anchor.web3.sendAndConfirmTransaction(provider.connection, transaction, [from]);
+  async function createAndProcessTransaction(
+    client: Connection,
+    payer: Keypair,
+    instruction: TransactionInstruction,
+    additionalSigners: Keypair[] = []
+  ): Promise<any> {
+    const tx = new Transaction();
+    const { blockhash } = await client.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = payer.publicKey;
+    tx.add(instruction);
+    tx.sign(payer, ...additionalSigners);
+    return await client.sendTransaction(tx, additionalSigners, { skipPreflight: true });
   }
 
-  function uiToNative(amount: number, decimals: number): number {
-    return Math.floor(amount * Math.pow(10, decimals));
+  function uiToNative(amount: number, decimals: number): BN {
+    return new BN(Math.floor(amount * Math.pow(10, decimals)));
+  }
+
+  async function setupATA(
+    context: any,
+    usdcMint: PublicKey,
+    owner: PublicKey,
+    amount: number
+  ): Promise<PublicKey> {
+    const ata = await getOrCreateAssociatedTokenAccount(
+      context.banksClient.connection,
+      payer,
+      usdcMint,
+      owner
+    );
+    // Assume the account balance is set via mintTo or other means
+    return ata.address;
   }
 
   before(async () => {
-    try {
-      console.log("Starting test setup...");
+    context = await startAnchor("/home/dc/flexxcash_xxUSD", [], []);
+    client = context.banksClient.connection;
+    payer = context.payer;
+    provider = new Provider(client, new Wallet(payer), {});
+    program = new Program<AssetManager>(
+      require("../target/idl/asset_manager.json"),
+      context.programId,
+      provider
+    );
 
-      // Airdrop SOL to user
-      const airdropSignature = await provider.connection.requestAirdrop(user.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL);
-      await provider.connection.confirmTransaction(airdropSignature);
-      console.log("Airdrop completed");
+    // Airdrop SOL to payer
+    const airdropSignature = await createAndProcessTransaction(
+      client,
+      payer,
+      SystemProgram.requestAirdrop({
+        to: payer.publicKey,
+        lamports: 10 * 1e9, // 10 SOL
+      })
+    );
+    await client.confirmTransaction(airdropSignature, "confirmed");
 
-      // Create asset mint (jupSOL)
-      assetMint = await createMint(
-        provider.connection,
-        user,
-        user.publicKey,
-        null,
-        9
-      );
-      console.log("Asset mint created:", assetMint.toBase58());
+    // Create Asset Mint (jupSOL)
+    assetMint = await createMint(
+      client,
+      payer,
+      payer.publicKey,
+      null,
+      9
+    );
 
-      // Create xxUSD mint
-      xxusdMint = await createMint(
-        provider.connection,
-        user,
-        user.publicKey,
-        null,
-        6
-      );
-      console.log("xxUSD mint created:", xxusdMint.toBase58());
+    // Create xxUSD Mint
+    xxusdMint = await createMint(
+      client,
+      payer,
+      payer.publicKey,
+      null,
+      6
+    );
 
-      // Create user asset account
-      const userAssetAccountInfo = await getOrCreateAssociatedTokenAccount(
-        provider.connection,
-        user,
-        assetMint,
-        user.publicKey
-      );
-      userAssetAccount = userAssetAccountInfo.address;
-      console.log("User asset account created:", userAssetAccount.toBase58());
+    // Create user asset account
+    const userAssetAccountInfo = await getOrCreateAssociatedTokenAccount(
+      client,
+      payer,
+      assetMint,
+      user.publicKey
+    );
+    userAssetAccount = userAssetAccountInfo.address;
 
-      // Create user xxUSD account
-      const userXxusdAccountInfo = await getOrCreateAssociatedTokenAccount(
-        provider.connection,
-        user,
-        xxusdMint,
-        user.publicKey
-      );
-      userXxusdAccount = userXxusdAccountInfo.address;
-      console.log("User xxUSD account created:", userXxusdAccount.toBase58());
+    // Create user xxUSD account
+    const userXxusdAccountInfo = await getOrCreateAssociatedTokenAccount(
+      client,
+      payer,
+      xxusdMint,
+      user.publicKey
+    );
+    userXxusdAccount = userXxusdAccountInfo.address;
 
-      // Mint some assets to user
-      await mintTo(
-        provider.connection,
-        user,
-        assetMint,
-        userAssetAccount,
-        user,
-        1000000000 // 1 jupSOL
-      );
-      console.log("Assets minted to user");
+    // Create Vault asset account
+    const vaultAssetAccountInfo = await getOrCreateAssociatedTokenAccount(
+      client,
+      payer,
+      assetMint,
+      program.programId
+    );
+    vaultAssetAccount = vaultAssetAccountInfo.address;
 
-      // Create vault asset account
-      const [vaultPda] = await anchor.web3.PublicKey.findProgramAddressSync(
-        [Buffer.from("vault"), assetMint.toBuffer()],
-        program.programId
-      );
-      const vaultAssetAccountInfo = await getOrCreateAssociatedTokenAccount(
-        provider.connection,
-        user,
-        assetMint,
-        vaultPda,
-        true
-      );
-      vaultAssetAccount = vaultAssetAccountInfo.address;
-      console.log("Vault asset account created:", vaultAssetAccount.toBase58());
+    // Create xxUSD Vault account
+    const xxusdVaultAccountInfo = await getOrCreateAssociatedTokenAccount(
+      client,
+      payer,
+      xxusdMint,
+      program.programId
+    );
+    xxusdVaultAccount = xxusdVaultAccountInfo.address;
 
-      // Create xxUSD vault account
-      const xxusdVaultAccountInfo = await getOrCreateAssociatedTokenAccount(
-        provider.connection,
-        user,
-        xxusdMint,
-        vaultPda,
-        true
-      );
-      xxusdVaultAccount = xxusdVaultAccountInfo.address;
-      console.log("xxUSD vault account created:", xxusdVaultAccount.toBase58());
+    // Mint assets to user
+    await mintTo(
+      client,
+      payer,
+      assetMint,
+      userAssetAccount,
+      payer,
+      1000000000 // 1 jupSOL
+    );
 
-      // Create user deposit account
-      const [userDepositAddress] = await anchor.web3.PublicKey.findProgramAddressSync(
-        [Buffer.from("user_deposit"), user.publicKey.toBuffer()],
-        program.programId
-      );
-      userDepositPda = userDepositAddress;
-      console.log("User deposit PDA created:", userDepositPda.toBase58());
+    // Initialize Program State PDA
+    const [statePda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("state")],
+      program.programId
+    );
+    programState = statePda;
 
-      // Create program state account
-      const [statePda] = await anchor.web3.PublicKey.findProgramAddressSync(
-        [Buffer.from("state")],
-        program.programId
-      );
-      programState = statePda;
-      console.log("Program state PDA created:", programState.toBase58());
+    // Create mock Oracle
+    oracle = Keypair.generate();
 
-      // Create mock oracle
-      oracle = anchor.web3.Keypair.generate();
-      console.log("Mock oracle created:", oracle.publicKey.toBase58());
+    // Create Mint and Vault Authority PDA
+    const [mintAuthPda] = PublicKey.findProgramAddressSync(
+      [programState.toBuffer()],
+      program.programId
+    );
+    mintAuthority = mintAuthPda;
+    vaultAuthority = mintAuthPda;
 
-      // Create mint and vault authority
-      const [mintAuthorityPda] = await anchor.web3.PublicKey.findProgramAddressSync(
-        [programState.toBuffer()],
-        program.programId
-      );
-      mintAuthority = mintAuthorityPda;
-      vaultAuthority = mintAuthorityPda;
-      console.log("Mint and vault authority created:", mintAuthority.toBase58());
-
-      // Initialize program state
-      await program.methods
-        .initialize(assetMint)
-        .accounts({
-          state: programState,
-          authority: provider.wallet.publicKey,
-          systemProgram: anchor.web3.SystemProgram.programId,
-        })
-        .rpc();
-      console.log("Program state initialized");
-
-      console.log("Test setup completed successfully");
-    } catch (error) {
-      console.error("Error during test setup:", error);
-      throw error;
-    }
+    // Initialize Program State
+    await program.methods
+      .initialize(assetMint)
+      .accounts({
+        state: programState,
+        authority: payer.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
   });
 
   it("Deposits asset successfully", async () => {
-    const depositAmount = new anchor.BN(100000000); // 0.1 jupSOL
+    const depositAmount = uiToNative(0.1, 9); // 0.1 jupSOL
 
-    try {
-      await program.methods
-        .depositAsset(depositAmount)
-        .accounts({
-          user: user.publicKey,
-          userAssetAccount: userAssetAccount,
-          assetMint: assetMint,
-          vaultAssetAccount: vaultAssetAccount,
-          userDeposit: userDepositPda,
-          state: programState,
-          oracle: oracle.publicKey,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: anchor.web3.SystemProgram.programId,
-        })
-        .signers([user])
-        .rpc();
+    await program.methods
+      .depositAsset(depositAmount)
+      .accounts({
+        user: user.publicKey,
+        userAssetAccount: userAssetAccount,
+        assetMint: assetMint,
+        vaultAssetAccount: vaultAssetAccount,
+        userDeposit: userDepositPda,
+        state: programState,
+        oracle: oracle.publicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([user])
+      .rpc();
 
-      // Verify deposit
-      const userDepositAccount = await program.account.userDeposit.fetch(userDepositPda);
-      expect(userDepositAccount.amount.toNumber()).to.be.above(0);
+    // Verify deposit
+    const userDepositAccount = await program.account.userDeposit.fetch(
+      userDepositPda
+    );
+    expect(userDepositAccount.amount.toNumber()).to.be.above(0);
 
-      const vaultBalance = await provider.connection.getTokenAccountBalance(vaultAssetAccount);
-      expect(vaultBalance.value.uiAmount).to.equal(0.1);
-
-      console.log("Deposit test passed successfully");
-    } catch (error) {
-      console.error("Error during deposit test:", error);
-      throw error;
-    }
+    const vaultBalance = await getOrCreateAssociatedTokenAccount(
+      client,
+      payer,
+      assetMint,
+      program.programId
+    ).then(acc => acc.amount.toNumber() / Math.pow(10, 9));
+    expect(vaultBalance).to.equal(0.1);
   });
 
   it("Mints and distributes xxUSD successfully", async () => {
-    const assetValue = new anchor.BN(1000000); // 1 USDC worth of asset
-    const productPrice = new anchor.BN(500000); // 0.5 USDC worth of product
+    const assetValue = new BN(1000000); // 1,000,000
+    const productPrice = new BN(500000); // 500,000
 
-    try {
-      await program.methods
-        .mintAndDistributeXxusd(assetValue, productPrice)
-        .accounts({
-          user: user.publicKey,
-          xxusdMint: xxusdMint,
-          xxusdVault: xxusdVaultAccount,
-          userXxusdAccount: userXxusdAccount,
-          mintAuthority: mintAuthority,
-          vaultAuthority: vaultAuthority,
-          userDeposit: userDepositPda,
-          state: programState,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: anchor.web3.SystemProgram.programId,
-        })
-        .signers([user])
-        .rpc();
+    await program.methods
+      .mintAndDistributeXxusd(assetValue, productPrice)
+      .accounts({
+        user: user.publicKey,
+        xxusdMint: xxusdMint,
+        xxusdVault: xxusdVaultAccount,
+        userXxusdAccount: userXxusdAccount,
+        mintAuthority: mintAuthority,
+        vaultAuthority: vaultAuthority,
+        userDeposit: userDepositPda,
+        state: programState,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([user])
+      .rpc();
 
-      // Verify minting and distribution
-      const userXxusdBalance = await provider.connection.getTokenAccountBalance(userXxusdAccount);
-      expect(userXxusdBalance.value.uiAmount).to.equal(0.5); // User should receive 0.5 xxUSD
+    // Verify minting and distribution
+    const userXxusdBalance = await getOrCreateAssociatedTokenAccount(
+      client,
+      payer,
+      xxusdMint,
+      userXxusdAccount
+    ).then(acc => acc.amount.toNumber() / Math.pow(10, 6));
+    expect(userXxusdBalance).to.equal(0.5);
 
-      const vaultXxusdBalance = await provider.connection.getTokenAccountBalance(xxusdVaultAccount);
-      expect(vaultXxusdBalance.value.uiAmount).to.equal(0.5); // Vault should hold 0.5 xxUSD (locked amount)
+    const vaultXxusdBalance = await getOrCreateAssociatedTokenAccount(
+      client,
+      payer,
+      xxusdMint,
+      program.programId
+    ).then(acc => acc.amount.toNumber() / Math.pow(10, 6));
+    expect(vaultXxusdBalance).to.equal(0.5);
 
-      const userDepositAccount = await program.account.userDeposit.fetch(userDepositPda);
-      expect(userDepositAccount.xxusdAmount.toNumber()).to.equal(500000); // User deposit should record 0.5 xxUSD
-
-      console.log("Mint and distribute xxUSD test passed successfully");
-    } catch (error) {
-      console.error("Error during mint and distribute xxUSD test:", error);
-      throw error;
-    }
+    const userDepositAccount = await program.account.userDeposit.fetch(userDepositPda);
+    expect(userDepositAccount.xxusdAmount.toNumber()).to.equal(500000);
   });
 
   it("Fails to mint xxUSD when exceeding minting limit", async () => {
-    const assetValue = new anchor.BN(1000000000); // 1000 USDC worth of asset (assuming this exceeds the minting limit)
-    const productPrice = new anchor.BN(500000000); // 500 USDC worth of product
+    const assetValue = new BN(1000000000); // 1,000,000,000
+    const productPrice = new BN(500000000); // 500,000,000
 
     try {
       await program.methods
@@ -286,31 +281,29 @@ describe("asset_manager", () => {
           userDeposit: userDepositPda,
           state: programState,
           tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: anchor.web3.SystemProgram.programId,
+          systemProgram: SystemProgram.programId,
         })
         .signers([user])
         .rpc();
       expect.fail("Expected transaction to fail");
-    } catch (error) {
+    } catch (error: any) {
       expect(error.message).to.include("Minting limit exceeded");
-      console.log("Minting limit test passed successfully");
     }
   });
 
   it("Fails to deposit when system is paused", async () => {
+    // Pause the system
+    await program.methods
+      .pauseSystem()
+      .accounts({
+        state: programState,
+        authority: payer.publicKey,
+      })
+      .rpc();
+
+    const depositAmount = uiToNative(0.1, 9); // 0.1 jupSOL
+
     try {
-      // Pause the system
-      await program.methods
-        .pauseSystem()
-        .accounts({
-          state: programState,
-          authority: provider.wallet.publicKey,
-        })
-        .rpc();
-      console.log("System paused");
-
-      const depositAmount = new anchor.BN(100000000); // 0.1 jupSOL
-
       await program.methods
         .depositAsset(depositAmount)
         .accounts({
@@ -322,29 +315,27 @@ describe("asset_manager", () => {
           state: programState,
           oracle: oracle.publicKey,
           tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: anchor.web3.SystemProgram.programId,
+          systemProgram: SystemProgram.programId,
         })
         .signers([user])
         .rpc();
       expect.fail("Expected transaction to fail");
-    } catch (error) {
+    } catch (error: any) {
       expect(error.message).to.include("System is paused");
-      console.log("Paused system test passed successfully");
     }
 
-    // Unpause the system for further tests
+    // Unpause the system
     await program.methods
       .unpauseSystem()
       .accounts({
         state: programState,
-        authority: provider.wallet.publicKey,
+        authority: payer.publicKey,
       })
       .rpc();
-    console.log("System unpaused");
   });
 
   it("Fails to deposit with invalid amount", async () => {
-    const depositAmount = new anchor.BN(0);
+    const depositAmount = new BN(0); // Invalid amount
 
     try {
       await program.methods
@@ -358,20 +349,19 @@ describe("asset_manager", () => {
           state: programState,
           oracle: oracle.publicKey,
           tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: anchor.web3.SystemProgram.programId,
+          systemProgram: SystemProgram.programId,
         })
         .signers([user])
         .rpc();
       expect.fail("Expected transaction to fail");
-    } catch (error) {
+    } catch (error: any) {
       expect(error.message).to.include("Invalid amount");
-      console.log("Invalid amount test passed successfully");
     }
   });
 
   it("Calculates lock period correctly", async () => {
-    const productPrice = new anchor.BN(1000000); // 1 USDC
-    const assetValue = new anchor.BN(2000000); // 2 USDC
+    const productPrice = new BN(1000000); // 1,000,000
+    const assetValue = new BN(2000000); // 2,000,000
 
     const lockPeriod = await program.methods
       .calculateLockPeriod(productPrice, assetValue)
@@ -381,99 +371,88 @@ describe("asset_manager", () => {
       .view();
 
     expect(lockPeriod.toNumber()).to.be.within(1, 365);
-    console.log("Lock period calculation test passed successfully");
   });
 
   it("Updates APY successfully", async () => {
-    const newApy = new anchor.BN(800); // 8%
+    const newApy = new BN(800); // 8%
 
     await program.methods
       .updateApy(newApy)
       .accounts({
         state: programState,
-        authority: provider.wallet.publicKey,
+        authority: payer.publicKey,
       })
       .rpc();
 
     const updatedState = await program.account.programState.fetch(programState);
     expect(updatedState.currentApy.toNumber()).to.equal(800);
-    console.log("APY update test passed successfully");
   });
 
   it("Fails to update APY with unauthorized account", async () => {
-    const newApy = new anchor.BN(900); // 9%
+    const newApy = new BN(900); // 9%
 
     try {
       await program.methods
         .updateApy(newApy)
         .accounts({
           state: programState,
-          authority: user.publicKey, // Using user's public key instead of the actual authority
+          authority: user.publicKey, // Unauthorized user
         })
         .signers([user])
         .rpc();
       expect.fail("Expected an error to be thrown");
-    } catch (error) {
+    } catch (error: any) {
       expect(error.message).to.include("UnauthorizedAccount");
-      console.log("Unauthorized APY update test passed successfully");
     }
   });
 
   it("Sets product price successfully", async () => {
-    const newPrice = new anchor.BN(2000); // 新價格為 20 USDC
+    const newPrice = new BN(2000); // New price: 2,000
 
-    try {
-      await program.methods
-        .setProductPrice(newPrice)
-        .accounts({
-          state: programState,
-          authority: provider.wallet.publicKey,
-        })
-        .rpc();
+    await program.methods
+      .setProductPrice(newPrice)
+      .accounts({
+        state: programState,
+        authority: payer.publicKey,
+      })
+      .rpc();
 
-      const updatedState = await program.account.programState.fetch(programState);
-      expect(updatedState.productPrice.toNumber()).to.equal(2000);
-      console.log("Product price update test passed successfully");
-    } catch (error) {
-      console.error("Error during product price update test:", error);
-      throw error;
-    }
+    const updatedState = await program.account.programState.fetch(programState);
+    expect(updatedState.productPrice.toNumber()).to.equal(2000);
   });
 
   it("Fails to set product price with unauthorized account", async () => {
-    const newPrice = new anchor.BN(2500); // 25 USDC
+    const newPrice = new BN(2500); // 2,500
 
     try {
       await program.methods
         .setProductPrice(newPrice)
         .accounts({
           state: programState,
-          authority: user.publicKey, // 使用用戶的公鑰而不是實際的管理員
+          authority: user.publicKey, // Unauthorized user
         })
         .signers([user])
         .rpc();
       expect.fail("Expected an error to be thrown");
-    } catch (error) {
+    } catch (error: any) {
       expect(error.message).to.include("UnauthorizedAccount");
-      console.log("Unauthorized product price update test passed successfully");
     }
   });
 
   it("Fails to set invalid product price", async () => {
-    const invalidPrice = new anchor.BN(5); // 低於最小允許價格
+    const invalidPrice = new BN(5); // Below minimum allowed price
 
     try {
       await program.methods
         .setProductPrice(invalidPrice)
         .accounts({
           state: programState,
-          authority: provider.wallet.publicKey,
+          authority: payer.publicKey,
         })
         .rpc();
       expect.fail("Expected an error to be thrown");
-    } catch (error) {
+    } catch (error: any) {
       expect(error.message).to.include("InvalidPrice");
-      console.log("Invalid product price test passed successfully");
     }
   });
 });

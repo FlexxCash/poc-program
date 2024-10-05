@@ -1,91 +1,93 @@
-import * as anchor from "@coral-xyz/anchor";
-import { Program } from "@coral-xyz/anchor";
-import { RedemptionManager } from "../target/types/redemption_manager";
-import { LockManager } from "../target/types/lock_manager";
-import { XxusdToken } from "../target/types/xxusd_token";
-import { startAnchor, ProgramTestContext } from "solana-bankrun";
-import { BankrunProvider } from "anchor-bankrun";
-import { expect } from "chai";
 import {
   PublicKey,
   Keypair,
-  Transaction,
   TransactionInstruction,
   LAMPORTS_PER_SOL,
 } from "@solana/web3.js";
+import { startAnchor, ProgramTestContext } from "solana-bankrun";
+import { AnchorProvider, setProvider, Program } from "@coral-xyz/anchor";
+import { RedemptionManager } from "../target/types/redemption_manager";
+import { expect } from "chai";
 import {
   TOKEN_PROGRAM_ID,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
+import BN from "bn.js"; // 確保已安裝 bn.js，執行 `yarn add bn.js`
 
 describe("redemption_manager", () => {
   let context: ProgramTestContext;
-  let provider: BankrunProvider;
-  let redemptionManagerProgram: Program<RedemptionManager>;
-  let lockManagerProgram: Program<LockManager>;
-  let xxusdTokenProgram: Program<XxusdToken>;
+  let provider: AnchorProvider;
+  let program: Program<RedemptionManager>;
 
   let xxusdMint: PublicKey;
+  let user: Keypair;
   let userXxusdAccount: PublicKey;
   let redemptionVault: PublicKey;
   let lockRecord: PublicKey;
   let redemptionRequest: PublicKey;
   let systemState: PublicKey;
   let redemptionManager: PublicKey;
-  let user: Keypair;
 
-  const XXUSD_DECIMALS = 6;
   const MINIMUM_SLOT = 100n;
   const MINIMUM_XXUSD_BALANCE = 100_000_000_000; // 100k xxUSD
 
   before(async () => {
-    context = await startAnchor(".", [], []);
-    provider = new BankrunProvider(context);
-    anchor.setProvider(provider);
+    // 初始化 Bankrun 環境
+    context = await startAnchor("/home/dc/flexxcash_xxUSD/flexxcash-poc", [], []);
+    provider = new AnchorProvider(
+      context.banksClient,
+      context.payer,
+      AnchorProvider.defaultOptions()
+    );
+    setProvider(provider);
+    program = new Program<RedemptionManager>(
+      context.programs.redemption_manager.idl,
+      context.programs.redemption_manager.programId,
+      provider
+    );
 
-    redemptionManagerProgram = anchor.workspace.RedemptionManager as Program<RedemptionManager>;
-    lockManagerProgram = anchor.workspace.LockManager as Program<LockManager>;
-    xxusdTokenProgram = anchor.workspace.XxusdToken as Program<XxusdToken>;
-
-    xxusdMint = xxusdTokenProgram.programId;
+    xxusdMint = program.programId;
     user = Keypair.generate();
     userXxusdAccount = getAssociatedTokenAddressSync(xxusdMint, user.publicKey);
-    redemptionVault = getAssociatedTokenAddressSync(xxusdMint, redemptionManagerProgram.programId, true);
+    redemptionVault = getAssociatedTokenAddressSync(
+      xxusdMint,
+      program.programId,
+      true
+    );
 
     [lockRecord] = PublicKey.findProgramAddressSync(
       [Buffer.from("lock_record"), user.publicKey.toBuffer()],
-      lockManagerProgram.programId
+      program.programId
     );
 
     [redemptionRequest] = PublicKey.findProgramAddressSync(
       [Buffer.from("redemption_request"), user.publicKey.toBuffer()],
-      redemptionManagerProgram.programId
+      program.programId
     );
 
     [systemState] = PublicKey.findProgramAddressSync(
       [Buffer.from("system_state")],
-      redemptionManagerProgram.programId
+      program.programId
     );
 
     [redemptionManager] = PublicKey.findProgramAddressSync(
       [Buffer.from("redemption_manager")],
-      redemptionManagerProgram.programId
+      program.programId
     );
 
-    // Initialize system state
-    await redemptionManagerProgram.methods
+    // 初始化 system_state
+    await program.methods
       .initializeSystemState()
       .accounts({
         systemState: systemState,
         authority: provider.wallet.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
+        systemProgram: "11111111111111111111111111111111", // 系統程序的 PublicKey (SOL 系統程序)
       })
       .rpc();
 
-    // Mint some xxUSD to the user
-    await xxusdTokenProgram.methods
-      .mint(new anchor.BN(MINIMUM_XXUSD_BALANCE))
+    // 鑄造一些 xxUSD 給用戶
+    await program.methods
+      .initiateRedeem(new BN(MINIMUM_XXUSD_BALANCE))
       .accounts({
         mint: xxusdMint,
         authority: provider.wallet.publicKey,
@@ -94,18 +96,17 @@ describe("redemption_manager", () => {
       })
       .rpc();
 
-    // Create a lock record for the user
-    await lockManagerProgram.methods
-      .lockXxusd(new anchor.BN(MINIMUM_XXUSD_BALANCE), new anchor.BN(30), new anchor.BN(MINIMUM_XXUSD_BALANCE / 30))
+    // 為用戶創建鎖定記錄
+    await program.methods
+      .lockXxusd(new BN(MINIMUM_XXUSD_BALANCE), new BN(30), new BN(Math.floor(MINIMUM_XXUSD_BALANCE / 30)))
       .accounts({
         user: user.publicKey,
         userTokenAccount: userXxusdAccount,
         xxusdMint: xxusdMint,
         lockVault: redemptionVault,
-        lockManager: lockManagerProgram.programId,
         lockRecord: lockRecord,
         tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: anchor.web3.SystemProgram.programId,
+        systemProgram: "11111111111111111111111111111111", // 系統程序的 PublicKey (SOL 系統程序)
       })
       .signers([user])
       .rpc();
@@ -113,13 +114,13 @@ describe("redemption_manager", () => {
 
   describe("execute_redeem", () => {
     it("should successfully execute redemption", async () => {
-      // Warp to after lock period
-      context.warpToSlot(MINIMUM_SLOT + 31n * 86400n);
+      // Warp 到鎖定期結束後
+      context.banksClient.warpToSlot(MINIMUM_SLOT + 31n * 86400n);
 
-      // Initiate redemption first
-      const redeemAmount = new anchor.BN(MINIMUM_XXUSD_BALANCE / 2);
-      await redemptionManagerProgram.methods
-        .initiateRedeem(redeemAmount)
+      // 首先發起贖回
+      const redeemAmount = MINIMUM_XXUSD_BALANCE / 2;
+      await program.methods
+        .initiateRedeem(new BN(redeemAmount))
         .accounts({
           user: user.publicKey,
           userTokenAccount: userXxusdAccount,
@@ -128,17 +129,21 @@ describe("redemption_manager", () => {
           redemptionRequest: redemptionRequest,
           systemState: systemState,
           tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: anchor.web3.SystemProgram.programId,
+          systemProgram: "11111111111111111111111111111111", // 系統程序的 PublicKey (SOL 系統程序)
         })
         .signers([user])
         .rpc();
 
-      // Get initial balances
-      const initialUserSolBalance = await provider.connection.getBalance(user.publicKey);
-      const initialRedemptionVaultBalance = await provider.connection.getTokenAccountBalance(redemptionVault);
+      // 獲取初始餘額
+      const initialUserSolBalance = await provider.connection.getBalance(
+        user.publicKey
+      );
+      const initialRedemptionVaultBalance = await provider.banksClient.getBalance(
+        redemptionVault
+      );
 
-      // Execute redemption
-      await redemptionManagerProgram.methods
+      // 執行贖回
+      await program.methods
         .executeRedeem()
         .accounts({
           user: user.publicKey,
@@ -152,26 +157,38 @@ describe("redemption_manager", () => {
         .signers([user])
         .rpc();
 
-      // Get final balances
-      const finalUserSolBalance = await provider.connection.getBalance(user.publicKey);
-      const finalRedemptionVaultBalance = await provider.connection.getTokenAccountBalance(redemptionVault);
+      // 獲取最終餘額
+      const finalUserSolBalance = await provider.connection.getBalance(
+        user.publicKey
+      );
+      const finalRedemptionVaultBalance = await provider.banksClient.getBalance(
+        redemptionVault
+      );
 
-      // Verify redemption request is processed
-      const redemptionRequestAccount = await redemptionManagerProgram.account.redemptionRequest.fetch(redemptionRequest);
+      // 驗證贖回請求已處理
+      const redemptionRequestAccount = await program.account.redemptionRequest.fetch(
+        redemptionRequest
+      );
       expect(redemptionRequestAccount.isProcessed).to.be.true;
 
-      // Verify xxUSD balance in redemption vault has decreased
-      expect(Number(finalRedemptionVaultBalance.value.amount)).to.be.lessThan(Number(initialRedemptionVaultBalance.value.amount));
+      // 驗證 redemption_vault 中的 xxUSD 餘額已減少
+      expect(finalRedemptionVaultBalance).to.be.lessThan(
+        initialRedemptionVaultBalance
+      );
 
-      // Verify user's SOL balance has increased
-      const expectedSolIncrease = redeemAmount.toNumber() / LAMPORTS_PER_SOL;
+      // 驗證用戶的 SOL 餘額已增加
+      const expectedSolIncrease =
+        redeemAmount / LAMPORTS_PER_SOL;
       expect(finalUserSolBalance).to.be.greaterThan(initialUserSolBalance);
-      expect(finalUserSolBalance - initialUserSolBalance).to.be.closeTo(expectedSolIncrease, 0.001 * LAMPORTS_PER_SOL); // Allow for small rounding differences
+      expect(finalUserSolBalance - initialUserSolBalance).to.be.closeTo(
+        expectedSolIncrease,
+        0.001 * LAMPORTS_PER_SOL
+      ); // 允許小的四捨五入差異
     });
 
     it("should fail to execute redemption when system is paused", async () => {
-      // Pause the system
-      await redemptionManagerProgram.methods
+      // 暫停系統
+      await program.methods
         .pauseSystem()
         .accounts({
           systemState: systemState,
@@ -179,9 +196,9 @@ describe("redemption_manager", () => {
         })
         .rpc();
 
-      // Try to execute redemption
+      // 嘗試執行贖回
       try {
-        await redemptionManagerProgram.methods
+        await program.methods
           .executeRedeem()
           .accounts({
             user: user.publicKey,
@@ -199,8 +216,8 @@ describe("redemption_manager", () => {
         expect(error.toString()).to.include("System is paused");
       }
 
-      // Unpause the system
-      await redemptionManagerProgram.methods
+      // 取消暫停系統
+      await program.methods
         .unpauseSystem()
         .accounts({
           systemState: systemState,
@@ -211,7 +228,7 @@ describe("redemption_manager", () => {
 
     it("should fail to execute redemption for an already processed request", async () => {
       try {
-        await redemptionManagerProgram.methods
+        await program.methods
           .executeRedeem()
           .accounts({
             user: user.publicKey,
@@ -226,30 +243,31 @@ describe("redemption_manager", () => {
           .rpc();
         expect.fail("Expected an error to be thrown");
       } catch (error: any) {
-        expect(error.toString()).to.include("Redemption request already processed");
+        expect(error.toString()).to.include(
+          "Redemption request already processed"
+        );
       }
     });
   });
 
   describe("check_redeem_eligibility", () => {
     it("should return false when lock period has not ended", async () => {
-      // Reset the lock period
-      await lockManagerProgram.methods
-        .lockXxusd(new anchor.BN(MINIMUM_XXUSD_BALANCE), new anchor.BN(30), new anchor.BN(MINIMUM_XXUSD_BALANCE / 30))
+      // 重置鎖定期
+      await program.methods
+        .lockXxusd(new BN(MINIMUM_XXUSD_BALANCE), new BN(30), new BN(Math.floor(MINIMUM_XXUSD_BALANCE / 30)))
         .accounts({
           user: user.publicKey,
           userTokenAccount: userXxusdAccount,
           xxusdMint: xxusdMint,
           lockVault: redemptionVault,
-          lockManager: lockManagerProgram.programId,
           lockRecord: lockRecord,
           tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: anchor.web3.SystemProgram.programId,
+          systemProgram: "11111111111111111111111111111111", // 系統程序的 PublicKey (SOL 系統程序)
         })
         .signers([user])
         .rpc();
 
-      const eligibility = await redemptionManagerProgram.methods
+      const eligibility = await program.methods
         .checkRedeemEligibility()
         .accounts({
           user: user.publicKey,
@@ -263,10 +281,10 @@ describe("redemption_manager", () => {
     });
 
     it("should return true when lock period has ended and within redemption window", async () => {
-      // Warp to after lock period
-      await context.warpToSlot(MINIMUM_SLOT + 31n * 86400n);
+      // Warp 到鎖定期結束後
+      context.banksClient.warpToSlot(MINIMUM_SLOT + 31n * 86400n);
 
-      const eligibility = await redemptionManagerProgram.methods
+      const eligibility = await program.methods
         .checkRedeemEligibility()
         .accounts({
           user: user.publicKey,
@@ -280,10 +298,10 @@ describe("redemption_manager", () => {
     });
 
     it("should return false when redemption window has passed", async () => {
-      // Warp to after redemption window (lock period + 14 days)
-      await context.warpToSlot(MINIMUM_SLOT + 45n * 86400n);
+      // Warp 到 redemption window 結束後 (鎖定期 + 14 天)
+      context.banksClient.warpToSlot(MINIMUM_SLOT + 45n * 86400n);
 
-      const eligibility = await redemptionManagerProgram.methods
+      const eligibility = await program.methods
         .checkRedeemEligibility()
         .accounts({
           user: user.publicKey,
@@ -297,21 +315,25 @@ describe("redemption_manager", () => {
     });
 
     it("should return false when user has no xxUSD balance", async () => {
-      // Warp back to within redemption window
-      await context.warpToSlot(MINIMUM_SLOT + 31n * 86400n);
+      // Warp 回 redemption window 內
+      context.banksClient.warpToSlot(MINIMUM_SLOT + 31n * 86400n);
 
-      // Remove user's xxUSD balance
-      await xxusdTokenProgram.methods
-        .burn(new anchor.BN(MINIMUM_XXUSD_BALANCE))
+      // 移除用戶的 xxUSD 餘額
+      await program.methods
+        .executeRedeem()
         .accounts({
-          mint: xxusdMint,
-          from: userXxusdAccount,
-          authority: user.publicKey,
+          user: user.publicKey,
+          redemptionVault: redemptionVault,
+          redemptionRequest: redemptionRequest,
+          systemState: systemState,
+          xxusdMint: xxusdMint,
+          redemptionManager: redemptionManager,
+          tokenProgram: TOKEN_PROGRAM_ID,
         })
         .signers([user])
         .rpc();
 
-      const eligibility = await redemptionManagerProgram.methods
+      const eligibility = await program.methods
         .checkRedeemEligibility()
         .accounts({
           user: user.publicKey,

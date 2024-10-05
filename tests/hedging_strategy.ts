@@ -1,12 +1,11 @@
-import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
+import { startAnchor } from "solana-bankrun";
+import { BankrunProvider } from "anchor-bankrun";
 import { HedgingStrategy } from "../target/types/hedging_strategy";
 import { expect } from "chai";
 import {
-  Keypair,
-  LAMPORTS_PER_SOL,
   PublicKey,
-  SystemProgram,
+  Keypair,
 } from "@solana/web3.js";
 import {
   TOKEN_PROGRAM_ID,
@@ -16,30 +15,41 @@ import {
   getAccount,
 } from "@solana/spl-token";
 
-describe("hedging_strategy", () => {
-  const provider = anchor.AnchorProvider.env();
-  anchor.setProvider(provider);
-
-  const program = anchor.workspace.HedgingStrategy as Program<HedgingStrategy>;
-
+describe("hedging_strategy with Bankrun", () => {
+  const PROJECT_DIRECTORY = ""; // 使用預設的 Anchor 專案目錄
+  const HEDGING_AMOUNT = 1000000000; // 1 token，9 個小數位
+  let context: any;
+  let provider: BankrunProvider;
+  let program: Program<HedgingStrategy>;
   let mint: PublicKey;
+  let user: Keypair;
+  let authority: Keypair;
   let userTokenAccount: PublicKey;
   let hedgingVault: PublicKey;
-  let user: Keypair;
   let systemState: PublicKey;
-  let authority: Keypair;
-
-  const HEDGING_AMOUNT = 1000000000; // 1 token with 9 decimals
 
   before(async () => {
+    context = await startAnchor(PROJECT_DIRECTORY, [], []);
+    provider = new BankrunProvider(context);
+    // 不使用 setProvider，直接從 provider 獲取 program
+    program = provider.programs["hedging_strategy"] as Program<HedgingStrategy>;
+
     user = Keypair.generate();
     authority = Keypair.generate();
 
-    // Airdrop SOL to user and authority
-    await provider.connection.requestAirdrop(user.publicKey, LAMPORTS_PER_SOL);
-    await provider.connection.requestAirdrop(authority.publicKey, LAMPORTS_PER_SOL);
+    // 空投 SOL 給 user 和 authority
+    await provider.banksClient.processTransaction(
+      await provider.banksClient.simulateTransaction(
+        new PublicKey(user.publicKey)
+      )
+    );
+    await provider.banksClient.processTransaction(
+      await provider.banksClient.simulateTransaction(
+        new PublicKey(authority.publicKey)
+      )
+    );
 
-    // Create mint
+    // 創建 mint
     mint = await createMint(
       provider.connection,
       user,
@@ -48,7 +58,7 @@ describe("hedging_strategy", () => {
       9
     );
 
-    // Create user token account
+    // 創建 user token account
     userTokenAccount = await createAccount(
       provider.connection,
       user,
@@ -56,7 +66,7 @@ describe("hedging_strategy", () => {
       user.publicKey
     );
 
-    // Create hedging vault
+    // 創建 hedging vault
     hedgingVault = await createAccount(
       provider.connection,
       user,
@@ -64,7 +74,7 @@ describe("hedging_strategy", () => {
       program.programId
     );
 
-    // Mint tokens to user
+    // Mint tokens 給 user
     await mintTo(
       provider.connection,
       user,
@@ -74,7 +84,7 @@ describe("hedging_strategy", () => {
       HEDGING_AMOUNT
     );
 
-    // Initialize system state
+    // 初始化 system state
     const [systemStatePda] = await PublicKey.findProgramAddress(
       [Buffer.from("system_state")],
       program.programId
@@ -86,7 +96,7 @@ describe("hedging_strategy", () => {
       .accounts({
         systemState: systemState,
         authority: authority.publicKey,
-        systemProgram: SystemProgram.programId,
+        systemProgram: TOKEN_PROGRAM_ID, // 確認 systemProgram 的正確性
       })
       .signers([authority])
       .rpc();
@@ -107,18 +117,18 @@ describe("hedging_strategy", () => {
         hedgingRecord,
         systemState,
         tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      } as any)
+        systemProgram: TOKEN_PROGRAM_ID, // 確認 systemProgram 的正確性
+      })
       .signers([user])
       .rpc();
 
-    // Verify hedging record
+    // 驗證 hedging record
     const hedgingRecordAccount = await program.account.hedgingRecord.fetch(hedgingRecord);
     expect(hedgingRecordAccount.user.toString()).to.equal(user.publicKey.toString());
     expect(hedgingRecordAccount.amount.toNumber()).to.equal(HEDGING_AMOUNT);
     expect(hedgingRecordAccount.isProcessing).to.be.false;
 
-    // Verify token balances
+    // 驗證 token balance
     const userTokenAccountInfo = await getAccount(provider.connection, userTokenAccount);
     const hedgingVaultInfo = await getAccount(provider.connection, hedgingVault);
     expect(Number(userTokenAccountInfo.amount)).to.equal(0);
@@ -126,7 +136,7 @@ describe("hedging_strategy", () => {
   });
 
   it("Fails when system is paused", async () => {
-    // Pause the system
+    // 暫停系統
     await program.methods
       .pauseSystem()
       .accounts({
@@ -151,18 +161,18 @@ describe("hedging_strategy", () => {
           hedgingRecord,
           systemState,
           tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        } as any)
+          systemProgram: TOKEN_PROGRAM_ID, // 確認 systemProgram 的正確性
+        })
         .signers([user])
         .rpc();
-      expect.fail("Expected an error to be thrown");
+      expect.fail("預期會拋出錯誤");
     } catch (error: any) {
       expect(error.toString()).to.include("System is paused");
     }
 
-    // Unpause the system
+    // 取消暫停系統
     await program.methods
-      .unpauseSystem()
+      .unpause_system()
       .accounts({
         systemState,
         authority: authority.publicKey,
@@ -187,11 +197,11 @@ describe("hedging_strategy", () => {
           hedgingRecord,
           systemState,
           tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        } as any)
+          systemProgram: TOKEN_PROGRAM_ID, // 確認 systemProgram 的正確性
+        })
         .signers([user])
         .rpc();
-      expect.fail("Expected an error to be thrown");
+      expect.fail("預期會拋出錯誤");
     } catch (error: any) {
       expect(error.toString()).to.include("Invalid amount");
     }
@@ -215,11 +225,11 @@ describe("hedging_strategy", () => {
           hedgingRecord,
           systemState,
           tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        } as any)
+          systemProgram: TOKEN_PROGRAM_ID, // 確認 systemProgram 的正確性
+        })
         .signers([user])
         .rpc();
-      expect.fail("Expected an error to be thrown");
+      expect.fail("預期會拋出錯誤");
     } catch (error: any) {
       expect(error.toString()).to.include("Insufficient balance");
     }

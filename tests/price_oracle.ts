@@ -1,145 +1,147 @@
-import * as anchor from '@coral-xyz/anchor';
-import { Program } from '@coral-xyz/anchor';
-import { PriceOracle } from '../target/types/price_oracle';
-import { assert } from 'chai';
+import { Program } from "@coral-xyz/anchor";
+import { PriceOracle } from "../target/types/price_oracle";
+import { expect } from "chai";
 import {
-  PullFeed,
-  loadLookupTables,
-} from "@switchboard-xyz/on-demand";
+  startAnchor,
+  ProgramTestContext,
+  BanksClient,
+  BanksTransactionResultWithMeta,
+} from "solana-bankrun";
+import { PublicKey, Transaction, Keypair, SystemProgram, VersionedTransaction } from "@solana/web3.js";
+import { assert } from "chai";
+import { BankrunProvider } from "anchor-bankrun";
 
-describe('price_oracle', () => {
-  const provider = anchor.AnchorProvider.env();
-  anchor.setProvider(provider);
-
-  const program = anchor.workspace.PriceOracle as Program<PriceOracle>;
-
-  let oracleAccount: anchor.web3.Keypair;
-  let feedPubkey: anchor.web3.PublicKey;
+describe("PriceOracle Tests with Bankrun", () => {
+  const PRICE_ORACLE_PROGRAM_ID = new PublicKey("YourPriceOracleProgramID"); // 替換為你的 PriceOracle 程序 ID
+  let context: ProgramTestContext;
+  let client: BanksClient;
+  let payer: Keypair;
+  let provider: BankrunProvider;
+  let program: Program<PriceOracle>;
+  let oracleAccount: Keypair;
 
   before(async () => {
-    oracleAccount = anchor.web3.Keypair.generate();
-    // 使用一個虛擬的 Switchboard feed 地址進行測試
-    feedPubkey = new anchor.web3.PublicKey("GvDMxPzN1sCj7L26YDK2HnMRXEQmQ2aemov8YBtPS7vR");
-  });
+    // 啟動 Bankrun 測試環境並部署 PriceOracle 程序
+    context = await startAnchor("/home/dc/flexxcash_xxUSD/flexxcash-poc", [], []);
+    client = context.banksClient;
+    payer = context.payer;
+    provider = new BankrunProvider(context);
 
-  it('Initializes the Oracle Account', async () => {
-    await program.methods.initialize()
+    // 設定 Anchor 的提供者
+    // @ts-ignore
+    (Program as any).defaults.provider = provider;
+
+    program = new Program<PriceOracle>(
+      require("../target/idl/price_oracle.json"),
+      PRICE_ORACLE_PROGRAM_ID,
+      provider
+    );
+
+    // 生成 Oracle 帳戶
+    oracleAccount = Keypair.generate();
+
+    // 初始化 Oracle 帳戶
+    const initializeIx = await program.methods
+      .initialize()
       .accounts({
         oracleAccount: oracleAccount.publicKey,
-        authority: provider.wallet.publicKey,
-        feed: feedPubkey,
+        authority: payer.publicKey,
+        feed: new PublicKey("GvDMxPzN1sCj7L26YDK2HnMRXEQmQ2aemov8YBtPS7vR"), // 替換為實際的 feed 公鑰
       })
       .signers([oracleAccount])
-      .rpc();
+      .instruction();
 
+    const initializeTx = new Transaction().add(initializeIx);
+    initializeTx.recentBlockhash = context.lastBlockhash;
+    initializeTx.feePayer = payer.publicKey;
+    initializeTx.sign(payer, oracleAccount);
+
+    const initializeResult: BanksTransactionResultWithMeta = await client.tryProcessTransaction(initializeTx);
+    expect(initializeResult.result).to.be.null;
+
+    // 檢查 Oracle 帳戶是否正確初始化
     const account = await program.account.oracleAccount.fetch(oracleAccount.publicKey);
-    assert.ok(account.authority.equals(provider.wallet.publicKey));
-    assert.ok(account.feed.equals(feedPubkey));
+    assert.ok(account.authority.equals(payer.publicKey));
+    assert.ok(account.feed.equals(new PublicKey("GvDMxPzN1sCj7L26YDK2HnMRXEQmQ2aemov8YBtPS7vR")));
     assert.equal(account.lastUpdateTimestamp.toNumber(), 0);
     assert.equal(account.cachedPrice.toNumber(), 0);
   });
 
-  it('Fetches the price and uses cache', async () => {
-    const connection = provider.connection;
-    const wallet = provider.wallet as anchor.Wallet;
-
-    // Load the Switchboard Anchor Program
-    const switchboardProgramId = new anchor.web3.PublicKey("SW1TCH7qEPTdLsDHRgPuMQjbQxKdH2aBStViMFnt64f");
-    const switchboardIdl = await Program.fetchIdl(switchboardProgramId, provider);
-    if (!switchboardIdl) throw new Error("Failed to fetch Switchboard IDL");
-    const switchboard = new Program(switchboardIdl, provider);
-
-    const feedAccount = new PullFeed(switchboard, feedPubkey);
-
-    // Get the update instruction for switchboard
-    const [pullIx, responses, success] = await feedAccount.fetchUpdateIx();
-    const lookupTables = await loadLookupTables([...responses.map((x) => x.oracle), feedAccount]);
-
-    // Set priority fee for the tx
-    const priorityFeeIx = anchor.web3.ComputeBudgetProgram.setComputeUnitPrice({
-      microLamports: 100_000,
-    });
-
-    // Get the latest context
-    const {
-      context: { slot: minContextSlot },
-      value: { blockhash, lastValidBlockHeight },
-    } = await connection.getLatestBlockhashAndContext();
-
-    // Get Transaction Message 
-    const message = new anchor.web3.TransactionMessage({
-      payerKey: wallet.publicKey,
-      recentBlockhash: blockhash,
-      instructions: [priorityFeeIx, pullIx, 
-        await program.methods.getPrice("SOL")
-          .accounts({
-            oracleAccount: oracleAccount.publicKey,
-            feed: feedPubkey,
-          })
-          .instruction()
-      ],
-    }).compileToV0Message(lookupTables);
-    
-    // Get Versioned Transaction
-    const vtx = new anchor.web3.VersionedTransaction(message);
-    const signed = await wallet.signTransaction(vtx);
-
-    // Send the transaction via rpc 
-    const signature = await connection.sendRawTransaction(signed.serialize(), {
-      maxRetries: 0,
-      skipPreflight: true,
-    });
-    
-    // Wait for confirmation
-    await connection.confirmTransaction({
-      signature,
-      blockhash,
-      lastValidBlockHeight,
-    });
-
-    console.log(`Transaction sent: ${signature}`);
-
-    // 驗證價格已更新
-    const updatedAccount = await program.account.oracleAccount.fetch(oracleAccount.publicKey);
-    assert.notEqual(updatedAccount.cachedPrice.toNumber(), 0);
-
-    // 立即再次獲取價格，應該使用緩存
-    const cachedPrice = await program.methods.getPrice("SOL")
-      .accounts({
-        oracleAccount: oracleAccount.publicKey,
-        feed: feedPubkey,
-      })
-      .view();
-
-    assert.equal(cachedPrice.toString(), updatedAccount.cachedPrice.toString(), "Cached price should be the same");
-  });
-
-  it('Fails to fetch price for invalid asset', async () => {
-    try {
-      await program.methods.getPrice("")
+  describe("Get Price Functionality", () => {
+    it("Fetches and updates the price successfully", async () => {
+      // 模擬獲取價格
+      const getPriceIx = await program.methods
+        .getPrice("SOL")
         .accounts({
           oracleAccount: oracleAccount.publicKey,
-          feed: feedPubkey,
+          feed: new PublicKey("GvDMxPzN1sCj7L26YDK2HnMRXEQmQ2aemov8YBtPS7vR"),
         })
-        .view();
-      assert.fail('Should have thrown an error');
-    } catch (error) {
-      assert.include(error.message, 'InvalidAsset');
-    }
-  });
+        .instruction();
 
-  it('Fails to fetch price from uninitialized oracle', async () => {
-    const uninitializedOracleAccount = anchor.web3.Keypair.generate();
-    try {
-      await program.methods.getPrice("SOL")
+      const tx = new Transaction().add(getPriceIx);
+      tx.recentBlockhash = context.lastBlockhash;
+      tx.feePayer = payer.publicKey;
+      tx.sign(payer);
+
+      const result: BanksTransactionResultWithMeta = await client.tryProcessTransaction(tx);
+      expect(result.result).to.be.null;
+
+      // 檢查價格是否已更新
+      const updatedAccount = await program.account.oracleAccount.fetch(oracleAccount.publicKey);
+      expect(updatedAccount.cachedPrice.toNumber()).to.be.greaterThan(0);
+    });
+
+    it("Uses cached price on subsequent fetch", async () => {
+      // 再次獲取價格，應該使用緩存
+      const cachedPrice = await program.methods
+        .getPrice("SOL")
         .accounts({
-          oracleAccount: uninitializedOracleAccount.publicKey,
-          feed: feedPubkey,
+          oracleAccount: oracleAccount.publicKey,
+          feed: new PublicKey("GvDMxPzN1sCj7L26YDK2HnMRXEQmQ2aemov8YBtPS7vR"),
         })
         .view();
-      assert.fail('Should have thrown an error');
-    } catch (error) {
-      assert.include(error.message, 'NotInitialized');
-    }
+
+      const account = await program.account.oracleAccount.fetch(oracleAccount.publicKey);
+      expect(cachedPrice.toString()).to.equal(account.cachedPrice.toString());
+    });
+
+    it("Fails to fetch price for invalid asset", async () => {
+      try {
+        await program.methods
+          .getPrice("")
+          .accounts({
+            oracleAccount: oracleAccount.publicKey,
+            feed: new PublicKey("GvDMxPzN1sCj7L26YDK2HnMRXEQmQ2aemov8YBtPS7vR"),
+          })
+          .view();
+        assert.fail('應該拋出錯誤');
+      } catch (error) {
+        if (error instanceof Error) {
+          expect(error.message).to.include('InvalidAsset');
+        } else {
+          throw error;
+        }
+      }
+    });
+
+    it("Fails to fetch price from uninitialized oracle", async () => {
+      const uninitializedOracle = Keypair.generate();
+      try {
+        await program.methods
+          .getPrice("SOL")
+          .accounts({
+            oracleAccount: uninitializedOracle.publicKey,
+            feed: new PublicKey("GvDMxPzN1sCj7L26YDK2HnMRXEQmQ2aemov8YBtPS7vR"),
+          })
+          .view();
+        assert.fail('應該拋出錯誤');
+      } catch (error) {
+        if (error instanceof Error) {
+          expect(error.message).to.include('NotInitialized');
+        } else {
+          throw error;
+        }
+      }
+    });
   });
 });
