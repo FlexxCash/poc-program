@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Mint};
 use solana_program::pubkey::Pubkey;
 
-declare_id!("91hM5ZdHVbH7tH1a21QHRmPEFkHWS532DfcpGPBUkdAF");
+declare_id!("7jSP9mvv2PshB7GtDPxD256eQHDCR4maoFSQ8XGmBL5W");
 
 const DAYS_IN_YEAR: u64 = 365;
 const APY_PRECISION: u64 = 10000;

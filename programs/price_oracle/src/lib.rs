@@ -4,7 +4,7 @@ use switchboard_on_demand::on_demand::accounts::pull_feed::PullFeedAccountData;
 use switchboard_on_demand::prelude::rust_decimal::prelude::ToPrimitive;
 use std::str::FromStr;
 
-declare_id!("CzpZdoxJhQjtzG7oLgTHinsPjtMFVzRXEYWy1pn3wQ9Z");
+declare_id!("F9Yjy49uum7bQjzvBupwHWpK4Qf7gFAh6kBRnKczcKK5");
 
 #[program]
 pub mod price_oracle {

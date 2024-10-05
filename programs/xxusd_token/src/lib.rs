@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, Mint, TokenAccount};
 use anchor_spl::associated_token::AssociatedToken;
 
-declare_id!("H1G2rsSaNmDovqg1wBmDZq23q9KYAMZdk3pNj4SZwhWS");
+declare_id!("Fg6pqSHakbvfyK85qAjJLfeMG6pQMucQc6Ypfn44rGuB");
 
 #[program]
 pub mod xxusd_token {

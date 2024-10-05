@@ -1,34 +1,31 @@
+[toolchain]
+
 [features]
-seeds = false
+resolution = true
 skip-lint = false
 
-[programs.localnet]
+[programs.devnet]
+access_control = "59s1DsR5srPzFUXkZB9QbhsTH6v8c1R8woYARPn9Boso"
+asset_manager = "7jSP9mvv2PshB7GtDPxD256eQHDCR4maoFSQ8XGmBL5W"
 flexxcash-poc = "3a3whekXLP4nu9HPdbrtPp6rqe1XG7WwoddhrfQXZYmj"
-price_oracle = "CzpZdoxJhQjtzG7oLgTHinsPjtMFVzRXEYWy1pn3wQ9Z"
-access_control = "7XqCdxDjk9QheBci6JQBzH8x6Y3Ny5TKPpcp8VvfgsYv"
-xxusd_token = "H1G2rsSaNmDovqg1wBmDZq23q9KYAMZdk3pNj4SZwhWS"
-asset_manager = "91hM5ZdHVbH7tH1a21QHRmPEFkHWS532DfcpGPBUkdAF"
-lock_manager = "AmP3jbYmGguEcmfr6ies1doxrvWQSWaB5Y37pN7Jowu1"
-redemption_manager = "BhBNrpuriccL3n6T1QvottBmZ1oHMeuaZus4UXjodxz9"
-hedging_strategy = "4QrrLAhjf24ufosccAAUvsw2cVnw5mpiqLwxuZxjgd1i"
+hedging_strategy = "c5D9rKEtdsXoHqXrcZPPLvJUJngHn9opfhLWh2SQX2V"
+lock_manager = "2XXVvc2QVB9EK7oZx29tTyi4modXGRbBpZzdJmo8YA4i"
+price_oracle = "F9Yjy49uum7bQjzvBupwHWpK4Qf7gFAh6kBRnKczcKK5"
+redemption_manager = "CvfEotmRMvkfq15NCBGLvJrQ4rKgXd7ktJiuouMYyyJ2"
+xxusd_token = "Fg6pqSHakbvfyK85qAjJLfeMG6pQMucQc6Ypfn44rGuB"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/new_id.json"
-endpoint = "http://localhost:8899"
 
 [scripts]
 deploy = "anchor deploy"
-test = "anchor test"
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
 
 [test]
 startup_wait = 10000
-validator_port = 8899
-test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
-
-[test.validator]
-url = "http://localhost:8899"
-rpc_port = 8899
+shutdown_wait = 2000
+upgradeable = true

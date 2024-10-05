@@ -1,53 +1,38 @@
+import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { startAnchor } from "solana-bankrun";
-import { BankrunProvider } from "anchor-bankrun";
 import { HedgingStrategy } from "../target/types/hedging_strategy";
 import { expect } from "chai";
 import {
   PublicKey,
   Keypair,
+  SystemProgram,
 } from "@solana/web3.js";
 import {
   TOKEN_PROGRAM_ID,
   createMint,
-  createAccount,
+  createAssociatedTokenAccount,
   mintTo,
   getAccount,
 } from "@solana/spl-token";
 
-describe("hedging_strategy with Bankrun", () => {
-  const PROJECT_DIRECTORY = ""; // 使用預設的 Anchor 專案目錄
+describe("hedging_strategy", () => {
   const HEDGING_AMOUNT = 1000000000; // 1 token，9 個小數位
-  let context: any;
-  let provider: BankrunProvider;
-  let program: Program<HedgingStrategy>;
+  const provider = anchor.AnchorProvider.env();
+  anchor.setProvider(provider);
+
+  const program = anchor.workspace.HedgingStrategy as Program<HedgingStrategy>;
+  const user = Keypair.generate();
+  const authority = new PublicKey("EJ5XgoBodvu2Ts6EasT3umoSL1zSWoDTGiQKKg8naWJe");
+
   let mint: PublicKey;
-  let user: Keypair;
-  let authority: Keypair;
   let userTokenAccount: PublicKey;
   let hedgingVault: PublicKey;
   let systemState: PublicKey;
 
   before(async () => {
-    context = await startAnchor(PROJECT_DIRECTORY, [], []);
-    provider = new BankrunProvider(context);
-    // 不使用 setProvider，直接從 provider 獲取 program
-    program = provider.programs["hedging_strategy"] as Program<HedgingStrategy>;
-
-    user = Keypair.generate();
-    authority = Keypair.generate();
-
-    // 空投 SOL 給 user 和 authority
-    await provider.banksClient.processTransaction(
-      await provider.banksClient.simulateTransaction(
-        new PublicKey(user.publicKey)
-      )
-    );
-    await provider.banksClient.processTransaction(
-      await provider.banksClient.simulateTransaction(
-        new PublicKey(authority.publicKey)
-      )
-    );
+    // 空投 SOL 給 user
+    const airdropSignature = await provider.connection.requestAirdrop(user.publicKey, 2 * anchor.web3.LAMPORTS_PER_SOL);
+    await provider.connection.confirmTransaction(airdropSignature);
 
     // 創建 mint
     mint = await createMint(
@@ -59,7 +44,7 @@ describe("hedging_strategy with Bankrun", () => {
     );
 
     // 創建 user token account
-    userTokenAccount = await createAccount(
+    userTokenAccount = await createAssociatedTokenAccount(
       provider.connection,
       user,
       mint,
@@ -67,7 +52,7 @@ describe("hedging_strategy with Bankrun", () => {
     );
 
     // 創建 hedging vault
-    hedgingVault = await createAccount(
+    hedgingVault = await createAssociatedTokenAccount(
       provider.connection,
       user,
       mint,
@@ -80,7 +65,7 @@ describe("hedging_strategy with Bankrun", () => {
       user,
       mint,
       userTokenAccount,
-      user.publicKey,
+      user,
       HEDGING_AMOUNT
     );
 
@@ -95,10 +80,9 @@ describe("hedging_strategy with Bankrun", () => {
       .initializeSystemState()
       .accounts({
         systemState: systemState,
-        authority: authority.publicKey,
-        systemProgram: TOKEN_PROGRAM_ID, // 確認 systemProgram 的正確性
+        authority: authority,
+        systemProgram: SystemProgram.programId,
       })
-      .signers([authority])
       .rpc();
   });
 
@@ -117,7 +101,7 @@ describe("hedging_strategy with Bankrun", () => {
         hedgingRecord,
         systemState,
         tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: TOKEN_PROGRAM_ID, // 確認 systemProgram 的正確性
+        systemProgram: SystemProgram.programId,
       })
       .signers([user])
       .rpc();
@@ -141,9 +125,8 @@ describe("hedging_strategy with Bankrun", () => {
       .pauseSystem()
       .accounts({
         systemState,
-        authority: authority.publicKey,
+        authority: authority,
       })
-      .signers([authority])
       .rpc();
 
     const [hedgingRecord] = await PublicKey.findProgramAddress(
@@ -161,7 +144,7 @@ describe("hedging_strategy with Bankrun", () => {
           hedgingRecord,
           systemState,
           tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: TOKEN_PROGRAM_ID, // 確認 systemProgram 的正確性
+          systemProgram: SystemProgram.programId,
         })
         .signers([user])
         .rpc();
@@ -172,12 +155,11 @@ describe("hedging_strategy with Bankrun", () => {
 
     // 取消暫停系統
     await program.methods
-      .unpause_system()
+      .unpauseSystem()
       .accounts({
         systemState,
-        authority: authority.publicKey,
+        authority: authority,
       })
-      .signers([authority])
       .rpc();
   });
 
@@ -197,7 +179,7 @@ describe("hedging_strategy with Bankrun", () => {
           hedgingRecord,
           systemState,
           tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: TOKEN_PROGRAM_ID, // 確認 systemProgram 的正確性
+          systemProgram: SystemProgram.programId,
         })
         .signers([user])
         .rpc();
@@ -225,7 +207,7 @@ describe("hedging_strategy with Bankrun", () => {
           hedgingRecord,
           systemState,
           tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: TOKEN_PROGRAM_ID, // 確認 systemProgram 的正確性
+          systemProgram: SystemProgram.programId,
         })
         .signers([user])
         .rpc();

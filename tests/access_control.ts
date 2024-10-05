@@ -1,274 +1,222 @@
-import { startAnchor } from "solana-bankrun";
-import { BankrunProvider } from "anchor-bankrun";
-import { Program } from "@coral-xyz/anchor";
-import { PublicKey, Keypair, TransactionInstruction, Transaction } from "@solana/web3.js";
+import * as anchor from "@coral-xyz/anchor";
+import { Program, AnchorError } from "@coral-xyz/anchor";
+import { PublicKey, Keypair } from "@solana/web3.js";
 import { expect } from "chai";
 import { AccessControl } from "../target/types/access_control";
-import {
-  AddedAccount,
-  BanksClient,
-  BanksTransactionResultWithMeta,
-  ProgramTestContext,
-} from "solana-bankrun";
-import { AccountLayout, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
-// Constants
-const ADMIN_ROLE = "ADMIN";
-const MANAGER_ROLE = "MANAGER";
-
-// Helper Functions
-async function createAndProcessTransaction(
-  client: BanksClient,
-  payer: Keypair,
-  instruction: TransactionInstruction,
-  additionalSigners: Keypair[] = []
-): Promise<BanksTransactionResultWithMeta> {
-  const tx = new Transaction();
-  const latestBlockhashTuple = await client.getLatestBlockhash();
-  if (!latestBlockhashTuple) {
-    throw new Error("Failed to get latest blockhash");
-  }
-  const [latestBlockhash] = latestBlockhashTuple;
-  tx.recentBlockhash = latestBlockhash;
-  tx.feePayer = payer.publicKey;
-  tx.add(instruction);
-  if (additionalSigners.length > 0) {
-    tx.sign(...additionalSigners);
-  }
-  return await client.tryProcessTransaction(tx);
+interface AccessControlAccount {
+  admin: PublicKey;
+  isPaused: boolean;
+  permissions: { [key: string]: boolean };
 }
 
-describe("AccessControl Tests with Bankrun", () => {
-  let context: ProgramTestContext;
-  let client: BanksClient;
-  let payer: Keypair;
-  let provider: BankrunProvider;
-  let program: Program<AccessControl>;
-  let accessControlAccount: PublicKey;
-  let adminKeypair: Keypair;
+describe("AccessControl Tests on Devnet", () => {
+  // 創建 devnet Anchor 提供者
+  const provider = anchor.AnchorProvider.env();
+
+  // 設置 Anchor 使用 devnet 集群
+  anchor.setProvider(provider);
+
+  // 獲取程式實例
+  const program = anchor.workspace.AccessControl as Program<AccessControl>;
+
+  // 獲取用戶的公鑰
+  const user = new PublicKey("EJ5XgoBodvu2Ts6EasT3umoSL1zSWoDTGiQKKg8naWJe");
+
+  // 使用程式 ID 和用戶公鑰生成 PDA（程式派生地址）
+  const [accessControlPDA] = PublicKey.findProgramAddressSync(
+    [Buffer.from("access-control"), user.toBuffer()],
+    program.programId
+  );
+
+  const ADMIN_ROLE = "ADMIN";
+  const MANAGER_ROLE = "MANAGER";
+
+  async function getAccessControlAccount(): Promise<AccessControlAccount | null> {
+    try {
+      const accountInfo = await provider.connection.getAccountInfo(accessControlPDA);
+      if (accountInfo === null) {
+        return null;
+      }
+      return program.coder.accounts.decode("AccessControl", accountInfo.data) as AccessControlAccount;
+    } catch (error) {
+      console.error("Failed to fetch account:", error);
+      return null;
+    }
+  }
 
   before(async () => {
-    adminKeypair = Keypair.generate();
-    // Airdrop some SOL to the admin account for transaction fees
-    context = await startAnchor("", [], [
-      {
-        address: adminKeypair.publicKey,
-        info: {
-          lamports: 2 * 1_000_000_000,
-          data: Buffer.alloc(0),
-          owner: PublicKey.default,
-          executable: false,
-        },
-      },
-    ]);
-    client = context.banksClient;
-    payer = context.payer;
-    provider = new BankrunProvider(context);
-    program = new Program<AccessControl>(
-      require("../target/idl/access_control.json"),
-      new PublicKey("7XqCdxDjk9QheBci6JQBzH8x6Y3Ny5TKPpcp8VvfgsYv"), // 替換為實際的程序 ID
-      provider
-    );
-
-    // 生成一個獨立的 AccessControl 賬戶公鑰
-    accessControlAccount = Keypair.generate().publicKey;
-
-    // 初始化 Access Control Account
-    const initializeIx = await program.methods
-      .initialize()
-      .accounts({
-        accessControl: accessControlAccount,
-        admin: adminKeypair.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      })
-      .instruction();
-
-    // 初始化 AccessControl 賬戶，僅由 adminKeypair 簽名
-    await createAndProcessTransaction(client, payer, initializeIx, [adminKeypair]);
+    // 在所有測試開始前初始化帳戶
+    try {
+      await program.methods
+        .initialize()
+        .accounts({
+          accessControl: accessControlPDA,
+          admin: user,
+        })
+        .rpc();
+    } catch (error) {
+      console.error("Initializes Failed:", error);
+    }
   });
 
-  it("Initializes the access control account correctly", async () => {
-    const accountData = await program.account.accessControl.fetch(accessControlAccount);
-    expect(accountData).to.exist;
-    expect(accountData.admin.toString()).to.equal(adminKeypair.publicKey.toString());
-    expect(accountData.isPaused).to.be.false;
-    expect(accountData.permissions.size).to.equal(0);
+  it("Initializes the access control account", async () => {
+    const accountData = await getAccessControlAccount();
+    expect(accountData).to.not.be.null;
+    expect(accountData!.admin.toString()).to.equal(user.toString());
+    expect(accountData!.isPaused).to.be.false;
+    expect(Object.keys(accountData!.permissions)).to.have.lengthOf(0);
   });
 
   it("Sets permissions as admin", async () => {
-    const setPermissionsIx = await program.methods
+    await program.methods
       .setPermissions(MANAGER_ROLE, true)
       .accounts({
-        accessControl: accessControlAccount,
-        admin: adminKeypair.publicKey,
+        accessControl: accessControlPDA,
+        admin: user,
       })
-      .instruction();
+      .rpc();
 
-    const txResult = await createAndProcessTransaction(client, payer, setPermissionsIx, [adminKeypair]);
-
-    expect(txResult.result).to.be.null;
-    expect(txResult.meta!.logMessages).to.deep.include.members([
-      `Program log: Set permissions for role ${MANAGER_ROLE} to true`,
-      "Program 7XqCdxDjk9QheBci6JQBzH8x6Y3Ny5TKPpcp8VvfgsYv success",
-    ]);
+    const accountData = await getAccessControlAccount();
+    expect(accountData).to.not.be.null;
+    expect(accountData!.permissions[MANAGER_ROLE]).to.be.true;
   });
 
   it("Activates emergency stop as admin", async () => {
-    const emergencyStopIx = await program.methods
+    await program.methods
       .emergencyStop()
       .accounts({
-        accessControl: accessControlAccount,
-        admin: adminKeypair.publicKey,
+        accessControl: accessControlPDA,
+        admin: user,
       })
-      .instruction();
+      .rpc();
 
-    const txResult = await createAndProcessTransaction(client, payer, emergencyStopIx, [adminKeypair]);
-
-    expect(txResult.result).to.be.null;
-    expect(txResult.meta!.logMessages).to.deep.include.members([
-      "Program log: Emergency stop activated",
-      "Program 7XqCdxDjk9QheBci6JQBzH8x6Y3Ny5TKPpcp8VvfgsYv success",
-    ]);
+    const accountData = await getAccessControlAccount();
+    expect(accountData).to.not.be.null;
+    expect(accountData!.isPaused).to.be.true;
   });
 
   it("Resumes after emergency stop as admin", async () => {
-    const resumeIx = await program.methods
+    await program.methods
       .resume()
       .accounts({
-        accessControl: accessControlAccount,
-        admin: adminKeypair.publicKey,
+        accessControl: accessControlPDA,
+        admin: user,
       })
-      .instruction();
+      .rpc();
 
-    const txResult = await createAndProcessTransaction(client, payer, resumeIx, [adminKeypair]);
-
-    expect(txResult.result).to.be.null;
-    expect(txResult.meta!.logMessages).to.deep.include.members([
-      "Program log: System resumed",
-      "Program 7XqCdxDjk9QheBci6JQBzH8x6Y3Ny5TKPpcp8VvfgsYv success",
-    ]);
+    const accountData = await getAccessControlAccount();
+    expect(accountData).to.not.be.null;
+    expect(accountData!.isPaused).to.be.false;
   });
 
   it("Fails when non-admin tries to set permissions", async () => {
     const nonAdminKeypair = Keypair.generate();
-    // Airdrop some SOL 到 non-admin 賬戶以支付交易費用
-    context.setAccount(nonAdminKeypair.publicKey, {
-      lamports: 1 * 1_000_000_000,
-      data: Buffer.alloc(0),
-      owner: PublicKey.default,
-      executable: false,
-    });
 
-    const setPermissionsIx = await program.methods
-      .setPermissions(MANAGER_ROLE, true)
-      .accounts({
-        accessControl: accessControlAccount,
-        admin: nonAdminKeypair.publicKey,
-      })
-      .instruction();
-
-    const txResult = await createAndProcessTransaction(client, payer, setPermissionsIx, [nonAdminKeypair]);
-
-    expect(txResult.result).to.exist;
-    expect(txResult.meta!.logMessages).to.deep.include.members([
-      "Program log: Unauthorized",
-      "Program 7XqCdxDjk9QheBci6JQBzH8x6Y3Ny5TKPpcp8VvfgsYv failed",
-    ]);
+    try {
+      await program.methods
+        .setPermissions(MANAGER_ROLE, true)
+        .accounts({
+          accessControl: accessControlPDA,
+          admin: nonAdminKeypair.publicKey,
+        })
+        .signers([nonAdminKeypair])
+        .rpc();
+      expect.fail("Transaction should have failed");
+    } catch (error) {
+      expect(error).to.be.instanceOf(AnchorError);
+      const anchorError = error as AnchorError;
+      expect(anchorError.error.errorCode.code).to.equal("Unauthorized");
+    }
   });
 
   it("Fails when non-admin tries to activate emergency stop", async () => {
     const nonAdminKeypair = Keypair.generate();
-    // Airdrop some SOL 到 non-admin 賬戶以支付交易費用
-    context.setAccount(nonAdminKeypair.publicKey, {
-      lamports: 1 * 1_000_000_000,
-      data: Buffer.alloc(0),
-      owner: PublicKey.default,
-      executable: false,
-    });
 
-    const emergencyStopIx = await program.methods
-      .emergencyStop()
-      .accounts({
-        accessControl: accessControlAccount,
-        admin: nonAdminKeypair.publicKey,
-      })
-      .instruction();
-
-    const txResult = await createAndProcessTransaction(client, payer, emergencyStopIx, [nonAdminKeypair]);
-
-    expect(txResult.result).to.exist;
-    expect(txResult.meta!.logMessages).to.deep.include.members([
-      "Program log: Unauthorized",
-      "Program 7XqCdxDjk9QheBci6JQBzH8x6Y3Ny5TKPpcp8VvfgsYv failed",
-    ]);
+    try {
+      await program.methods
+        .emergencyStop()
+        .accounts({
+          accessControl: accessControlPDA,
+          admin: nonAdminKeypair.publicKey,
+        })
+        .signers([nonAdminKeypair])
+        .rpc();
+      expect.fail("Transaction should have failed");
+    } catch (error) {
+      expect(error).to.be.instanceOf(AnchorError);
+      const anchorError = error as AnchorError;
+      expect(anchorError.error.errorCode.code).to.equal("Unauthorized");
+    }
   });
 
   it("Fails to set invalid permissions", async () => {
-    const setPermissionsIx = await program.methods
-      .setPermissions("INVALID_ROLE", true) // 假設第二個參數為布林值；如果不是，請根據實際情況調整
-      .accounts({
-        accessControl: accessControlAccount,
-        admin: adminKeypair.publicKey,
-      })
-      .instruction();
-
-    const txResult = await createAndProcessTransaction(client, payer, setPermissionsIx, [adminKeypair]);
-
-    expect(txResult.result).to.exist;
-    expect(txResult.meta!.logMessages).to.deep.include.members([
-      "Program log: InvalidPermission",
-      "Program 7XqCdxDjk9QheBci6JQBzH8x6Y3Ny5TKPpcp8VvfgsYv failed",
-    ]);
+    try {
+      await program.methods
+        .setPermissions("INVALID_ROLE", true)
+        .accounts({
+          accessControl: accessControlPDA,
+          admin: user,
+        })
+        .rpc();
+      expect.fail("Transaction should have failed");
+    } catch (error) {
+      expect(error).to.be.instanceOf(AnchorError);
+      const anchorError = error as AnchorError;
+      expect(anchorError.error.errorCode.code).to.equal("InvalidPermission");
+    }
   });
 
   it("Fails to activate emergency stop when already paused", async () => {
-    // 首先，啟動緊急停止
-    const emergencyStopIx = await program.methods
+    // First, activate emergency stop
+    await program.methods
       .emergencyStop()
       .accounts({
-        accessControl: accessControlAccount,
-        admin: adminKeypair.publicKey,
+        accessControl: accessControlPDA,
+        admin: user,
       })
-      .instruction();
+      .rpc();
 
-    await createAndProcessTransaction(client, payer, emergencyStopIx, [adminKeypair]);
+    // Then try to activate it again
+    try {
+      await program.methods
+        .emergencyStop()
+        .accounts({
+          accessControl: accessControlPDA,
+          admin: user,
+        })
+        .rpc();
+      expect.fail("Transaction should have failed");
+    } catch (error) {
+      expect(error).to.be.instanceOf(AnchorError);
+      const anchorError = error as AnchorError;
+      expect(anchorError.error.errorCode.code).to.equal("AlreadyPaused");
+    }
 
-    // 再次嘗試啟動緊急停止
-    const txResult = await createAndProcessTransaction(client, payer, emergencyStopIx, [adminKeypair]);
-
-    expect(txResult.result).to.exist;
-    expect(txResult.meta!.logMessages).to.deep.include.members([
-      "Program log: AlreadyPaused",
-      "Program 7XqCdxDjk9QheBci6JQBzH8x6Y3Ny5TKPpcp8VvfgsYv failed",
-    ]);
-
-    // 恢復系統以便進行其他測試
-    const resumeIx = await program.methods
+    // Resume for other tests
+    await program.methods
       .resume()
       .accounts({
-        accessControl: accessControlAccount,
-        admin: adminKeypair.publicKey,
+        accessControl: accessControlPDA,
+        admin: user,
       })
-      .instruction();
-
-    await createAndProcessTransaction(client, payer, resumeIx, [adminKeypair]);
+      .rpc();
   });
 
   it("Fails to resume when not paused", async () => {
-    const resumeIx = await program.methods
-      .resume()
-      .accounts({
-        accessControl: accessControlAccount,
-        admin: adminKeypair.publicKey,
-      })
-      .instruction();
-
-    const txResult = await createAndProcessTransaction(client, payer, resumeIx, [adminKeypair]);
-
-    expect(txResult.result).to.exist;
-    expect(txResult.meta!.logMessages).to.deep.include.members([
-      "Program log: NotPaused",
-      "Program 7XqCdxDjk9QheBci6JQBzH8x6Y3Ny5TKPpcp8VvfgsYv failed",
-    ]);
+    try {
+      await program.methods
+        .resume()
+        .accounts({
+          accessControl: accessControlPDA,
+          admin: user,
+        })
+        .rpc();
+      expect.fail("Transaction should have failed");
+    } catch (error) {
+      expect(error).to.be.instanceOf(AnchorError);
+      const anchorError = error as AnchorError;
+      expect(anchorError.error.errorCode.code).to.equal("NotPaused");
+    }
   });
 });
