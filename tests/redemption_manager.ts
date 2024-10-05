@@ -11,6 +11,7 @@ import {
   Keypair,
   Transaction,
   TransactionInstruction,
+  LAMPORTS_PER_SOL,
 } from "@solana/web3.js";
 import {
   TOKEN_PROGRAM_ID,
@@ -31,6 +32,7 @@ describe("redemption_manager", () => {
   let lockRecord: PublicKey;
   let redemptionRequest: PublicKey;
   let systemState: PublicKey;
+  let redemptionManager: PublicKey;
   let user: Keypair;
 
   const XXUSD_DECIMALS = 6;
@@ -63,6 +65,11 @@ describe("redemption_manager", () => {
 
     [systemState] = PublicKey.findProgramAddressSync(
       [Buffer.from("system_state")],
+      redemptionManagerProgram.programId
+    );
+
+    [redemptionManager] = PublicKey.findProgramAddressSync(
+      [Buffer.from("redemption_manager")],
       redemptionManagerProgram.programId
     );
 
@@ -104,58 +111,217 @@ describe("redemption_manager", () => {
       .rpc();
   });
 
-  async function processTransaction(
-    instruction: TransactionInstruction,
-    signers: Keypair[] = []
-  ) {
-    const tx = new Transaction().add(instruction);
-    tx.recentBlockhash = context.lastBlockhash;
-    tx.feePayer = provider.wallet.publicKey;
-    tx.sign(...signers);
-    return await context.banksClient.processTransaction(tx);
-  }
+  describe("execute_redeem", () => {
+    it("should successfully execute redemption", async () => {
+      // Warp to after lock period
+      context.warpToSlot(MINIMUM_SLOT + 31n * 86400n);
 
-  describe("Time Travel Tests", () => {
-    const testCases = [
-      { desc: "(too early)", slot: MINIMUM_SLOT - 1n, shouldSucceed: false },
-      { desc: "(at or above threshold)", slot: MINIMUM_SLOT, shouldSucceed: true },
-    ];
+      // Initiate redemption first
+      const redeemAmount = new anchor.BN(MINIMUM_XXUSD_BALANCE / 2);
+      await redemptionManagerProgram.methods
+        .initiateRedeem(redeemAmount)
+        .accounts({
+          user: user.publicKey,
+          userTokenAccount: userXxusdAccount,
+          redemptionVault: redemptionVault,
+          lockRecord: lockRecord,
+          redemptionRequest: redemptionRequest,
+          systemState: systemState,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([user])
+        .rpc();
 
-    testCases.forEach(({ desc, slot, shouldSucceed }) => {
-      it(`Initiates redemption when slot is ${slot} ${desc}`, async () => {
-        context.warpToSlot(slot);
+      // Get initial balances
+      const initialUserSolBalance = await provider.connection.getBalance(user.publicKey);
+      const initialRedemptionVaultBalance = await provider.connection.getTokenAccountBalance(redemptionVault);
 
-        const ix = await redemptionManagerProgram.methods
-          .initiateRedeem(new anchor.BN(MINIMUM_XXUSD_BALANCE))
+      // Execute redemption
+      await redemptionManagerProgram.methods
+        .executeRedeem()
+        .accounts({
+          user: user.publicKey,
+          redemptionVault: redemptionVault,
+          redemptionRequest: redemptionRequest,
+          systemState: systemState,
+          xxusdMint: xxusdMint,
+          redemptionManager: redemptionManager,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([user])
+        .rpc();
+
+      // Get final balances
+      const finalUserSolBalance = await provider.connection.getBalance(user.publicKey);
+      const finalRedemptionVaultBalance = await provider.connection.getTokenAccountBalance(redemptionVault);
+
+      // Verify redemption request is processed
+      const redemptionRequestAccount = await redemptionManagerProgram.account.redemptionRequest.fetch(redemptionRequest);
+      expect(redemptionRequestAccount.isProcessed).to.be.true;
+
+      // Verify xxUSD balance in redemption vault has decreased
+      expect(Number(finalRedemptionVaultBalance.value.amount)).to.be.lessThan(Number(initialRedemptionVaultBalance.value.amount));
+
+      // Verify user's SOL balance has increased
+      const expectedSolIncrease = redeemAmount.toNumber() / LAMPORTS_PER_SOL;
+      expect(finalUserSolBalance).to.be.greaterThan(initialUserSolBalance);
+      expect(finalUserSolBalance - initialUserSolBalance).to.be.closeTo(expectedSolIncrease, 0.001 * LAMPORTS_PER_SOL); // Allow for small rounding differences
+    });
+
+    it("should fail to execute redemption when system is paused", async () => {
+      // Pause the system
+      await redemptionManagerProgram.methods
+        .pauseSystem()
+        .accounts({
+          systemState: systemState,
+          authority: provider.wallet.publicKey,
+        })
+        .rpc();
+
+      // Try to execute redemption
+      try {
+        await redemptionManagerProgram.methods
+          .executeRedeem()
           .accounts({
             user: user.publicKey,
-            userTokenAccount: userXxusdAccount,
             redemptionVault: redemptionVault,
-            lockRecord: lockRecord,
             redemptionRequest: redemptionRequest,
             systemState: systemState,
+            xxusdMint: xxusdMint,
+            redemptionManager: redemptionManager,
             tokenProgram: TOKEN_PROGRAM_ID,
-            systemProgram: anchor.web3.SystemProgram.programId,
           })
-          .instruction();
+          .signers([user])
+          .rpc();
+        expect.fail("Expected an error to be thrown");
+      } catch (error: any) {
+        expect(error.toString()).to.include("System is paused");
+      }
 
-        if (shouldSucceed) {
-          await processTransaction(ix, [user]);
-          const redemptionRequestAccount = await redemptionManagerProgram.account.redemptionRequest.fetch(redemptionRequest);
-          expect(redemptionRequestAccount.user.toString()).to.equal(user.publicKey.toString());
-          expect(redemptionRequestAccount.amount.toNumber()).to.equal(MINIMUM_XXUSD_BALANCE);
-          expect(redemptionRequestAccount.isProcessed).to.be.false;
-        } else {
-          try {
-            await processTransaction(ix, [user]);
-            expect.fail("Expected an error to be thrown");
-          } catch (error: any) {
-            expect(error.toString()).to.include("LockPeriodNotEnded");
-          }
-        }
-      });
+      // Unpause the system
+      await redemptionManagerProgram.methods
+        .unpauseSystem()
+        .accounts({
+          systemState: systemState,
+          authority: provider.wallet.publicKey,
+        })
+        .rpc();
+    });
+
+    it("should fail to execute redemption for an already processed request", async () => {
+      try {
+        await redemptionManagerProgram.methods
+          .executeRedeem()
+          .accounts({
+            user: user.publicKey,
+            redemptionVault: redemptionVault,
+            redemptionRequest: redemptionRequest,
+            systemState: systemState,
+            xxusdMint: xxusdMint,
+            redemptionManager: redemptionManager,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([user])
+          .rpc();
+        expect.fail("Expected an error to be thrown");
+      } catch (error: any) {
+        expect(error.toString()).to.include("Redemption request already processed");
+      }
     });
   });
 
-  // Add more tests here as needed
+  describe("check_redeem_eligibility", () => {
+    it("should return false when lock period has not ended", async () => {
+      // Reset the lock period
+      await lockManagerProgram.methods
+        .lockXxusd(new anchor.BN(MINIMUM_XXUSD_BALANCE), new anchor.BN(30), new anchor.BN(MINIMUM_XXUSD_BALANCE / 30))
+        .accounts({
+          user: user.publicKey,
+          userTokenAccount: userXxusdAccount,
+          xxusdMint: xxusdMint,
+          lockVault: redemptionVault,
+          lockManager: lockManagerProgram.programId,
+          lockRecord: lockRecord,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([user])
+        .rpc();
+
+      const eligibility = await redemptionManagerProgram.methods
+        .checkRedeemEligibility()
+        .accounts({
+          user: user.publicKey,
+          lockRecord: lockRecord,
+          userTokenAccount: userXxusdAccount,
+          systemState: systemState,
+        })
+        .view();
+
+      expect(eligibility).to.be.false;
+    });
+
+    it("should return true when lock period has ended and within redemption window", async () => {
+      // Warp to after lock period
+      await context.warpToSlot(MINIMUM_SLOT + 31n * 86400n);
+
+      const eligibility = await redemptionManagerProgram.methods
+        .checkRedeemEligibility()
+        .accounts({
+          user: user.publicKey,
+          lockRecord: lockRecord,
+          userTokenAccount: userXxusdAccount,
+          systemState: systemState,
+        })
+        .view();
+
+      expect(eligibility).to.be.true;
+    });
+
+    it("should return false when redemption window has passed", async () => {
+      // Warp to after redemption window (lock period + 14 days)
+      await context.warpToSlot(MINIMUM_SLOT + 45n * 86400n);
+
+      const eligibility = await redemptionManagerProgram.methods
+        .checkRedeemEligibility()
+        .accounts({
+          user: user.publicKey,
+          lockRecord: lockRecord,
+          userTokenAccount: userXxusdAccount,
+          systemState: systemState,
+        })
+        .view();
+
+      expect(eligibility).to.be.false;
+    });
+
+    it("should return false when user has no xxUSD balance", async () => {
+      // Warp back to within redemption window
+      await context.warpToSlot(MINIMUM_SLOT + 31n * 86400n);
+
+      // Remove user's xxUSD balance
+      await xxusdTokenProgram.methods
+        .burn(new anchor.BN(MINIMUM_XXUSD_BALANCE))
+        .accounts({
+          mint: xxusdMint,
+          from: userXxusdAccount,
+          authority: user.publicKey,
+        })
+        .signers([user])
+        .rpc();
+
+      const eligibility = await redemptionManagerProgram.methods
+        .checkRedeemEligibility()
+        .accounts({
+          user: user.publicKey,
+          lockRecord: lockRecord,
+          userTokenAccount: userXxusdAccount,
+          systemState: systemState,
+        })
+        .view();
+
+      expect(eligibility).to.be.false;
+    });
+  });
 });
