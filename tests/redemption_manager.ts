@@ -1,6 +1,7 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { RedemptionManager } from "../target/types/redemption_manager";
+import { PriceOracle } from "../target/types/price_oracle";
 import { expect } from "chai";
 import {
   PublicKey,
@@ -21,14 +22,18 @@ describe("redemption_manager", () => {
   anchor.setProvider(provider);
 
   const program = anchor.workspace.RedemptionManager as Program<RedemptionManager>;
+  const priceOracleProgram = anchor.workspace.PriceOracle as Program<PriceOracle>;
   const user = provider.wallet.publicKey;
 
   let xxusdMint: PublicKey;
   let userXxusdAccount: PublicKey;
   let redemptionVault: PublicKey;
   let systemState: PublicKey;
+  let oracleAccount: Keypair;
 
   const MINIMUM_XXUSD_BALANCE = new BN(100_000_000_000); // 100k xxUSD
+  const mockSolFeed = new PublicKey("GvDMxPzN1sCj7L26YDK2HnMRXEQmQ2aemov8YBtPS7vR");
+  const mockInterestAssetFeed = new PublicKey("4NiWaTuje7SVe9DN1vfnX7m1qBC7DnUxwRxbdgEDUGX1");
 
   async function createAndSendV0Tx(txInstructions: anchor.web3.TransactionInstruction[], signers: anchor.web3.Keypair[] = []) {
     let latestBlockhash = await provider.connection.getLatestBlockhash("confirmed");
@@ -66,6 +71,21 @@ describe("redemption_manager", () => {
   }
 
   before(async () => {
+    // Initialize PriceOracle
+    oracleAccount = Keypair.generate();
+    const initializeOracleInstruction = await priceOracleProgram.methods
+      .initialize()
+      .accounts({
+        oracleAccount: oracleAccount.publicKey,
+        authority: provider.wallet.publicKey,
+        solFeed: mockSolFeed,
+        interestAssetFeed: mockInterestAssetFeed,
+        systemProgram: SystemProgram.programId,
+      } as any)
+      .instruction();
+
+    await createAndSendV0Tx([initializeOracleInstruction], [oracleAccount]);
+
     // Create xxUSD mint
     xxusdMint = await createMint(
       provider.connection,
@@ -126,6 +146,16 @@ describe("redemption_manager", () => {
   it("should successfully execute redemption", async () => {
     const initialUserSolBalance = await provider.connection.getBalance(user);
 
+    // Get SOL price before redemption
+    const getPriceInstruction = await priceOracleProgram.methods
+      .getPrice("SOL")
+      .accounts({
+        oracleAccount: oracleAccount.publicKey,
+        solFeed: mockSolFeed,
+        interestAssetFeed: mockInterestAssetFeed,
+      } as any)
+      .instruction();
+
     const executeRedeemInstruction = await program.methods
       .executeRedeem()
       .accounts({
@@ -136,11 +166,13 @@ describe("redemption_manager", () => {
       } as any)
       .instruction();
 
-    await createAndSendV0Tx([executeRedeemInstruction]);
+    await createAndSendV0Tx([getPriceInstruction, executeRedeemInstruction]);
 
     const finalUserSolBalance = await provider.connection.getBalance(user);
 
     expect(finalUserSolBalance).to.be.greaterThan(initialUserSolBalance);
+
+    // You could add additional checks here based on the SOL price if needed
   });
 
   it("should fail to execute redemption when system is paused", async () => {

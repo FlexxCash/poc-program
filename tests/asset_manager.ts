@@ -1,6 +1,7 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { AssetManager } from "../target/types/asset_manager";
+import { PriceOracle } from "../target/types/price_oracle";
 import {
   TOKEN_PROGRAM_ID,
   getOrCreateAssociatedTokenAccount,
@@ -18,6 +19,7 @@ describe("asset_manager", () => {
   anchor.setProvider(provider);
 
   const program = anchor.workspace.AssetManager as Program<AssetManager>;
+  const priceOracleProgram = anchor.workspace.PriceOracle as Program<PriceOracle>;
   const connection = provider.connection;
 
   const user = provider.wallet.publicKey;
@@ -31,7 +33,10 @@ describe("asset_manager", () => {
   let xxusdVaultAccount: PublicKey;
   let userDepositPda: PublicKey;
   let programState: PublicKey;
-  let oracle: Keypair;
+  let oracleAccount: Keypair;
+
+  const mockSolFeed = new PublicKey("GvDMxPzN1sCj7L26YDK2HnMRXEQmQ2aemov8YBtPS7vR");
+  const mockInterestAssetFeed = new PublicKey("4NiWaTuje7SVe9DN1vfnX7m1qBC7DnUxwRxbdgEDUGX1");
 
   function uiToNative(amount: number, decimals: number): BN {
     return new BN(Math.floor(amount * Math.pow(10, decimals)));
@@ -118,8 +123,20 @@ describe("asset_manager", () => {
     );
     programState = statePda;
 
-    // Create mock Oracle
-    oracle = Keypair.generate();
+    // Initialize PriceOracle
+    oracleAccount = Keypair.generate();
+    const initializeOracleInstruction = await priceOracleProgram.methods
+      .initialize()
+      .accounts({
+        oracleAccount: oracleAccount.publicKey,
+        authority: provider.wallet.publicKey,
+        solFeed: mockSolFeed,
+        interestAssetFeed: mockInterestAssetFeed,
+        systemProgram: SystemProgram.programId,
+      } as any)
+      .instruction();
+
+    await createAndSendV0Tx([initializeOracleInstruction], [oracleAccount]);
 
     // Initialize Program State
     const initializeInstruction = await program.methods
@@ -140,6 +157,16 @@ describe("asset_manager", () => {
       program.programId
     );
 
+    // Get price from PriceOracle
+    const getPriceInstruction = await priceOracleProgram.methods
+      .getPrice("InterestAsset")
+      .accounts({
+        oracleAccount: oracleAccount.publicKey,
+        solFeed: mockSolFeed,
+        interestAssetFeed: mockInterestAssetFeed,
+      } as any)
+      .instruction();
+
     const depositInstruction = await program.methods
       .depositAsset(depositAmount)
       .accounts({
@@ -148,13 +175,13 @@ describe("asset_manager", () => {
         assetMint: jupsolMint,
         vaultAssetAccount: vaultAssetAccount,
         state: programState,
-        oracle: oracle.publicKey,
+        oracle: oracleAccount.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       } as any)
       .instruction();
 
-    await createAndSendV0Tx([depositInstruction]);
+    await createAndSendV0Tx([getPriceInstruction, depositInstruction]);
 
     // Verify deposit
     const userDepositAccount = await program.account.userDeposit.fetch(

@@ -274,7 +274,7 @@ describe("FlexxCash Integration Tests", () => {
   });
 
   it("Integrates AssetManager with PriceOracle", async () => {
-    // Get InterestAsset data (includes JupSOL price and APY)
+    // Get InterestAsset data
     const getPriceInstruction = await priceOracleProgram.methods
       .getPrice("InterestAsset")
       .accounts({
