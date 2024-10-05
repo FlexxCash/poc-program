@@ -12,7 +12,7 @@ describe("PriceOracle Tests on Devnet", () => {
   // 獲取程式實例
   const program = anchor.workspace.PriceOracle as Program<PriceOracle>;
 
-  // 生成 Oracle 帳戶
+  // 生成 Oracle 帳戶 
   const oracleAccount = Keypair.generate();
 
   // 模擬 Switchboard feed 公鑰

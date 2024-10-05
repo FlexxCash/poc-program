@@ -43,13 +43,6 @@ describe("asset_manager", () => {
   }
 
   before(async () => {
-    // Airdrop SOL to payer if needed
-    const balance = await connection.getBalance(payer.publicKey);
-    if (balance < 1 * anchor.web3.LAMPORTS_PER_SOL) {
-      const airdropSignature = await connection.requestAirdrop(payer.publicKey, 2 * anchor.web3.LAMPORTS_PER_SOL);
-      await connection.confirmTransaction(airdropSignature);
-    }
-
     // Create user asset account (jupSOL)
     const userAssetAccountInfo = await getOrCreateAssociatedTokenAccount(
       connection,

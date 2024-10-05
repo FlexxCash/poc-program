@@ -3,7 +3,7 @@ import { Program } from "@coral-xyz/anchor";
 import { FlexxcashPoc } from "../target/types/flexxcash_poc";
 
 describe("flexxcash-poc", () => {
-  // Configure the client to use the local cluster.
+  // Configure the client to use the local cluster. 
   anchor.setProvider(anchor.AnchorProvider.env());
 
   const program = anchor.workspace.FlexxcashPoc as Program<FlexxcashPoc>;

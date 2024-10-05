@@ -30,9 +30,6 @@ describe("hedging_strategy", () => {
   let systemState: PublicKey;
 
   before(async () => {
-    // 空投 SOL 給 user
-    const airdropSignature = await provider.connection.requestAirdrop(user.publicKey, 2 * anchor.web3.LAMPORTS_PER_SOL);
-    await provider.connection.confirmTransaction(airdropSignature);
 
     // 創建 mint
     mint = await createMint(

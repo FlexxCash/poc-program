@@ -31,10 +31,6 @@ describe("redemption_manager", () => {
   const MINIMUM_XXUSD_BALANCE = new BN(100_000_000_000); // 100k xxUSD
 
   before(async () => {
-    // Airdrop SOL to user
-    const airdropSignature = await provider.connection.requestAirdrop(user.publicKey, 10 * LAMPORTS_PER_SOL);
-    await provider.connection.confirmTransaction(airdropSignature);
-
     // Create xxUSD mint
     xxusdMint = await createMint(
       provider.connection,

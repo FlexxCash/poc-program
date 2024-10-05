@@ -32,10 +32,6 @@ describe("lock_manager", () => {
   let lockRecord: PublicKey;
 
   before(async () => {
-    // 空投 SOL 給 user
-    const airdropSignature = await provider.connection.requestAirdrop(user.publicKey, 2 * anchor.web3.LAMPORTS_PER_SOL);
-    await provider.connection.confirmTransaction(airdropSignature);
-
     // 創建 xxUSD mint
     xxusdMint = await createMint(
       provider.connection,
