@@ -5,27 +5,54 @@ import { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddres
 import { expect } from "chai";
 
 describe("xxusd_token", () => {
-  // 配置 Anchor provider
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
 
-  // 獲取程式實例
   const program = anchor.workspace.XxusdToken as Program<XxusdToken>;
-
-  // 使用指定的錢包
-  const wallet = new anchor.Wallet(anchor.web3.Keypair.fromSecretKey(
-    Buffer.from(JSON.parse(require('fs').readFileSync('/home/dc/.config/solana/new_id.json', 'utf-8')))
-  ));
-
-  const user = wallet.publicKey;
+  const user = provider.wallet.publicKey;
 
   let mint: anchor.web3.PublicKey;
   let tokenAccount: anchor.web3.PublicKey;
 
+  async function createAndSendV0Tx(txInstructions: anchor.web3.TransactionInstruction[], signers: anchor.web3.Keypair[] = []) {
+    let latestBlockhash = await provider.connection.getLatestBlockhash("confirmed");
+    console.log("   ✅ - Fetched latest blockhash. Last valid block height:", latestBlockhash.lastValidBlockHeight);
+
+    const messageV0 = new anchor.web3.TransactionMessage({
+      payerKey: provider.wallet.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions: txInstructions,
+    }).compileToV0Message();
+    console.log("   ✅ - Compiled transaction message");
+    const transaction = new anchor.web3.VersionedTransaction(messageV0);
+
+    if (signers.length > 0) {
+      transaction.sign(signers);
+    }
+    await provider.wallet.signTransaction(transaction);
+    console.log("   ✅ - Transaction signed");
+
+    const txid = await provider.connection.sendTransaction(transaction, {
+      maxRetries: 5,
+    });
+    console.log("   ✅ - Transaction sent to network");
+
+    const confirmation = await provider.connection.confirmTransaction({
+      signature: txid,
+      blockhash: latestBlockhash.blockhash,
+      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+    });
+    if (confirmation.value.err) {
+      throw new Error(`   ❌ - Transaction not confirmed.\nReason: ${confirmation.value.err}`);
+    }
+
+    console.log("🎉 Transaction confirmed successfully!");
+  }
+
   it("Initializes the xxUSD token", async () => {
     mint = anchor.web3.Keypair.generate().publicKey;
 
-    await program.methods
+    const initializeInstruction = await program.methods
       .initialize(9, null)
       .accounts({
         mint,
@@ -33,9 +60,10 @@ describe("xxusd_token", () => {
         systemProgram: anchor.web3.SystemProgram.programId,
         tokenProgram: TOKEN_PROGRAM_ID,
         rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-      })
-      .signers([wallet.payer])
-      .rpc();
+      } as any)
+      .instruction();
+
+    await createAndSendV0Tx([initializeInstruction]);
 
     const mintInfo = await getMint(provider.connection, mint);
     expect(mintInfo).to.not.be.null;
@@ -45,7 +73,7 @@ describe("xxusd_token", () => {
   it("Mints xxUSD tokens", async () => {
     tokenAccount = await getAssociatedTokenAddress(mint, user);
 
-    await program.methods
+    const mintInstruction = await program.methods
       .mint(new anchor.BN(1000000000)) // 1 xxUSD
       .accounts({
         mint,
@@ -55,15 +83,16 @@ describe("xxusd_token", () => {
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
       } as any)
-      .signers([wallet.payer])
-      .rpc();
+      .instruction();
+
+    await createAndSendV0Tx([mintInstruction]);
 
     const account = await getAccount(provider.connection, tokenAccount);
     expect(account.amount.toString()).to.equal("1000000000");
   });
 
   it("Burns xxUSD tokens", async () => {
-    await program.methods
+    const burnInstruction = await program.methods
       .burn(new anchor.BN(500000000)) // 0.5 xxUSD
       .accounts({
         mint,
@@ -71,8 +100,9 @@ describe("xxusd_token", () => {
         authority: user,
         tokenProgram: TOKEN_PROGRAM_ID,
       } as any)
-      .signers([wallet.payer])
-      .rpc();
+      .instruction();
+
+    await createAndSendV0Tx([burnInstruction]);
 
     const account = await getAccount(provider.connection, tokenAccount);
     expect(account.amount.toString()).to.equal("500000000");
@@ -82,7 +112,7 @@ describe("xxusd_token", () => {
     const recipient = anchor.web3.Keypair.generate();
     const recipientTokenAccount = await getAssociatedTokenAddress(mint, recipient.publicKey);
 
-    await program.methods
+    const transferInstruction = await program.methods
       .transfer(new anchor.BN(250000000)) // 0.25 xxUSD
       .accounts({
         mint,
@@ -93,8 +123,9 @@ describe("xxusd_token", () => {
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
       } as any)
-      .signers([wallet.payer])
-      .rpc();
+      .instruction();
+
+    await createAndSendV0Tx([transferInstruction]);
 
     const senderAccount = await getAccount(provider.connection, tokenAccount);
     const recipientAccount = await getAccount(provider.connection, recipientTokenAccount);

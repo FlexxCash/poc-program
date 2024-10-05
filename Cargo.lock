@@ -2259,6 +2259,8 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "rust_decimal",
+ "serde",
+ "serde_json",
  "switchboard-on-demand",
 ]
 

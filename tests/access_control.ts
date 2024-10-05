@@ -11,25 +11,17 @@ interface AccessControlAccount {
 }
 
 describe("AccessControl Tests on Devnet", () => {
-  // 創建 devnet Anchor 提供者 
   const provider = anchor.AnchorProvider.env();
-
-  // 設置 Anchor 使用 devnet 集群
   anchor.setProvider(provider);
 
-  // 獲取程式實例
   const program = anchor.workspace.AccessControl as Program<AccessControl>;
+  const user = provider.wallet.publicKey;
 
-  // 獲取用戶的公鑰
-  const user = new PublicKey("EJ5XgoBodvu2Ts6EasT3umoSL1zSWoDTGiQKKg8naWJe");
-
-  // 使用程式 ID 和用戶公鑰生成 PDA（程式派生地址）
   const [accessControlPDA] = PublicKey.findProgramAddressSync(
     [Buffer.from("access-control"), user.toBuffer()],
     program.programId
   );
 
-  const ADMIN_ROLE = "ADMIN";
   const MANAGER_ROLE = "MANAGER";
 
   async function getAccessControlAccount(): Promise<AccessControlAccount | null> {
@@ -45,18 +37,56 @@ describe("AccessControl Tests on Devnet", () => {
     }
   }
 
+  async function createAndSendV0Tx(txInstructions: anchor.web3.TransactionInstruction[], signers: Keypair[] = []) {
+    let latestBlockhash = await provider.connection.getLatestBlockhash("confirmed");
+    console.log("   ✅ - Fetched latest blockhash. Last valid block height:", latestBlockhash.lastValidBlockHeight);
+
+    const messageV0 = new anchor.web3.TransactionMessage({
+      payerKey: provider.wallet.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions: txInstructions,
+    }).compileToV0Message();
+    console.log("   ✅ - Compiled transaction message");
+    const transaction = new anchor.web3.VersionedTransaction(messageV0);
+
+    if (signers.length > 0) {
+      transaction.sign(signers);
+    }
+    await provider.wallet.signTransaction(transaction);
+    console.log("   ✅ - Transaction signed");
+
+    const txid = await provider.connection.sendTransaction(transaction, {
+      maxRetries: 5,
+    });
+    console.log("   ✅ - Transaction sent to network");
+
+    const confirmation = await provider.connection.confirmTransaction({
+      signature: txid,
+      blockhash: latestBlockhash.blockhash,
+      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+    });
+    if (confirmation.value.err) {
+      throw new Error(`   ❌ - Transaction not confirmed.\nReason: ${confirmation.value.err}`);
+    }
+
+    console.log("🎉 Transaction confirmed successfully!");
+  }
+
   before(async () => {
-    // 在所有測試開始前初始化帳戶
     try {
-      await program.methods
+      const initializeInstruction = await program.methods
         .initialize()
         .accounts({
           accessControl: accessControlPDA,
           admin: user,
-        })
-        .rpc();
-    } catch (error) {
-      console.error("Initializes Failed:", error);
+        } as any)
+        .instruction();
+
+      await createAndSendV0Tx([initializeInstruction]);
+      console.log("Access Control account initialized successfully");
+    } catch (error: unknown) {
+      console.error("Initialization Failed:", error);
+      throw error;
     }
   });
 
@@ -69,13 +99,15 @@ describe("AccessControl Tests on Devnet", () => {
   });
 
   it("Sets permissions as admin", async () => {
-    await program.methods
+    const setPermissionsInstruction = await program.methods
       .setPermissions(MANAGER_ROLE, true)
       .accounts({
         accessControl: accessControlPDA,
         admin: user,
-      })
-      .rpc();
+      } as any)
+      .instruction();
+
+    await createAndSendV0Tx([setPermissionsInstruction]);
 
     const accountData = await getAccessControlAccount();
     expect(accountData).to.not.be.null;
@@ -83,13 +115,15 @@ describe("AccessControl Tests on Devnet", () => {
   });
 
   it("Activates emergency stop as admin", async () => {
-    await program.methods
+    const emergencyStopInstruction = await program.methods
       .emergencyStop()
       .accounts({
         accessControl: accessControlPDA,
         admin: user,
-      })
-      .rpc();
+      } as any)
+      .instruction();
+
+    await createAndSendV0Tx([emergencyStopInstruction]);
 
     const accountData = await getAccessControlAccount();
     expect(accountData).to.not.be.null;
@@ -97,13 +131,15 @@ describe("AccessControl Tests on Devnet", () => {
   });
 
   it("Resumes after emergency stop as admin", async () => {
-    await program.methods
+    const resumeInstruction = await program.methods
       .resume()
       .accounts({
         accessControl: accessControlPDA,
         admin: user,
-      })
-      .rpc();
+      } as any)
+      .instruction();
+
+    await createAndSendV0Tx([resumeInstruction]);
 
     const accountData = await getAccessControlAccount();
     expect(accountData).to.not.be.null;
@@ -114,19 +150,21 @@ describe("AccessControl Tests on Devnet", () => {
     const nonAdminKeypair = Keypair.generate();
 
     try {
-      await program.methods
+      const setPermissionsInstruction = await program.methods
         .setPermissions(MANAGER_ROLE, true)
         .accounts({
           accessControl: accessControlPDA,
           admin: nonAdminKeypair.publicKey,
-        })
-        .signers([nonAdminKeypair])
-        .rpc();
+        } as any)
+        .instruction();
+
+      await createAndSendV0Tx([setPermissionsInstruction], [nonAdminKeypair]);
       expect.fail("Transaction should have failed");
-    } catch (error) {
-      expect(error).to.be.instanceOf(AnchorError);
-      const anchorError = error as AnchorError;
-      expect(anchorError.error.errorCode.code).to.equal("Unauthorized");
+    } catch (error: unknown) {
+      expect(error).to.be.instanceOf(Error);
+      if (error instanceof Error) {
+        expect(error.message).to.include("Unauthorized");
+      }
     }
   });
 
@@ -134,89 +172,96 @@ describe("AccessControl Tests on Devnet", () => {
     const nonAdminKeypair = Keypair.generate();
 
     try {
-      await program.methods
+      const emergencyStopInstruction = await program.methods
         .emergencyStop()
         .accounts({
           accessControl: accessControlPDA,
           admin: nonAdminKeypair.publicKey,
-        })
-        .signers([nonAdminKeypair])
-        .rpc();
+        } as any)
+        .instruction();
+
+      await createAndSendV0Tx([emergencyStopInstruction], [nonAdminKeypair]);
       expect.fail("Transaction should have failed");
-    } catch (error) {
-      expect(error).to.be.instanceOf(AnchorError);
-      const anchorError = error as AnchorError;
-      expect(anchorError.error.errorCode.code).to.equal("Unauthorized");
+    } catch (error: unknown) {
+      expect(error).to.be.instanceOf(Error);
+      if (error instanceof Error) {
+        expect(error.message).to.include("Unauthorized");
+      }
     }
   });
 
   it("Fails to set invalid permissions", async () => {
     try {
-      await program.methods
+      const setPermissionsInstruction = await program.methods
         .setPermissions("INVALID_ROLE", true)
         .accounts({
           accessControl: accessControlPDA,
           admin: user,
-        })
-        .rpc();
+        } as any)
+        .instruction();
+
+      await createAndSendV0Tx([setPermissionsInstruction]);
       expect.fail("Transaction should have failed");
-    } catch (error) {
-      expect(error).to.be.instanceOf(AnchorError);
-      const anchorError = error as AnchorError;
-      expect(anchorError.error.errorCode.code).to.equal("InvalidPermission");
+    } catch (error: unknown) {
+      expect(error).to.be.instanceOf(Error);
+      if (error instanceof Error) {
+        expect(error.message).to.include("InvalidPermission");
+      }
     }
   });
 
   it("Fails to activate emergency stop when already paused", async () => {
     // First, activate emergency stop
-    await program.methods
+    const emergencyStopInstruction = await program.methods
       .emergencyStop()
       .accounts({
         accessControl: accessControlPDA,
         admin: user,
-      })
-      .rpc();
+      } as any)
+      .instruction();
+
+    await createAndSendV0Tx([emergencyStopInstruction]);
 
     // Then try to activate it again
     try {
-      await program.methods
-        .emergencyStop()
-        .accounts({
-          accessControl: accessControlPDA,
-          admin: user,
-        })
-        .rpc();
+      await createAndSendV0Tx([emergencyStopInstruction]);
       expect.fail("Transaction should have failed");
-    } catch (error) {
-      expect(error).to.be.instanceOf(AnchorError);
-      const anchorError = error as AnchorError;
-      expect(anchorError.error.errorCode.code).to.equal("AlreadyPaused");
+    } catch (error: unknown) {
+      expect(error).to.be.instanceOf(Error);
+      if (error instanceof Error) {
+        expect(error.message).to.include("AlreadyPaused");
+      }
     }
 
     // Resume for other tests
-    await program.methods
+    const resumeInstruction = await program.methods
       .resume()
       .accounts({
         accessControl: accessControlPDA,
         admin: user,
-      })
-      .rpc();
+      } as any)
+      .instruction();
+
+    await createAndSendV0Tx([resumeInstruction]);
   });
 
   it("Fails to resume when not paused", async () => {
     try {
-      await program.methods
+      const resumeInstruction = await program.methods
         .resume()
         .accounts({
           accessControl: accessControlPDA,
           admin: user,
-        })
-        .rpc();
+        } as any)
+        .instruction();
+
+      await createAndSendV0Tx([resumeInstruction]);
       expect.fail("Transaction should have failed");
-    } catch (error) {
-      expect(error).to.be.instanceOf(AnchorError);
-      const anchorError = error as AnchorError;
-      expect(anchorError.error.errorCode.code).to.equal("NotPaused");
+    } catch (error: unknown) {
+      expect(error).to.be.instanceOf(Error);
+      if (error instanceof Error) {
+        expect(error.message).to.include("NotPaused");
+      }
     }
   });
 });

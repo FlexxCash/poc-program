@@ -40,16 +40,18 @@ describe("hedging_strategy", () => {
     // 初始化 PriceOracle
     oracleAccount = Keypair.generate();
     try {
-      await priceOracleProgram.methods
+      const initializeInstruction = await priceOracleProgram.methods
         .initialize()
         .accounts({
           oracleAccount: oracleAccount.publicKey,
           authority: provider.wallet.publicKey,
           solFeed: mockSolFeed,
           interestAssetFeed: mockInterestAssetFeed,
-        })
-        .signers([oracleAccount])
-        .rpc();
+          systemProgram: SystemProgram.programId,
+        } as any)
+        .instruction();
+
+      await createAndSendV0Tx([initializeInstruction], [oracleAccount]);
 
       console.log("PriceOracle initialized successfully");
     } catch (error) {
@@ -99,14 +101,16 @@ describe("hedging_strategy", () => {
     );
     systemState = systemStatePda;
 
-    await program.methods
+    const initializeSystemStateInstruction = await program.methods
       .initializeSystemState()
       .accounts({
         systemState: systemState,
         authority: authority,
         systemProgram: SystemProgram.programId,
       } as any)
-      .rpc();
+      .instruction();
+
+    await createAndSendV0Tx([initializeSystemStateInstruction]);
   });
 
   it("Manages hedging successfully", async () => {
@@ -151,7 +155,7 @@ describe("hedging_strategy", () => {
         oracleAccount: oracleAccount.publicKey,
         solFeed: mockSolFeed,
         interestAssetFeed: mockInterestAssetFeed,
-      })
+      } as any)
       .instruction();
 
     await createAndSendV0Tx([getPriceInstruction]);
@@ -190,13 +194,15 @@ describe("hedging_strategy", () => {
 
   it("Fails when system is paused", async () => {
     // 暫停系統
-    await program.methods
+    const pauseSystemInstruction = await program.methods
       .pauseSystem()
       .accounts({
         systemState,
         authority: authority,
       } as any)
-      .rpc();
+      .instruction();
+
+    await createAndSendV0Tx([pauseSystemInstruction]);
 
     const [hedgingRecord] = await PublicKey.findProgramAddress(
       [Buffer.from("hedging_record"), user.publicKey.toBuffer()],
@@ -224,13 +230,15 @@ describe("hedging_strategy", () => {
     }
 
     // 取消暫停系統
-    await program.methods
+    const unpauseSystemInstruction = await program.methods
       .unpauseSystem()
       .accounts({
         systemState,
         authority: authority,
       } as any)
-      .rpc();
+      .instruction();
+
+    await createAndSendV0Tx([unpauseSystemInstruction]);
   });
 
   it("Fails when trying to hedge with zero amount", async () => {
@@ -291,26 +299,26 @@ describe("hedging_strategy", () => {
 
   async function createAndSendV0Tx(txInstructions: anchor.web3.TransactionInstruction[], signers: Keypair[] = []) {
     let latestBlockhash = await provider.connection.getLatestBlockhash("confirmed");
-    console.log("   ✅ - 獲取最新區塊哈希。最後有效高度：", latestBlockhash.lastValidBlockHeight);
+    console.log("   ✅ - Fetched latest blockhash. Last valid block height:", latestBlockhash.lastValidBlockHeight);
 
     const messageV0 = new anchor.web3.TransactionMessage({
       payerKey: provider.wallet.publicKey,
       recentBlockhash: latestBlockhash.blockhash,
       instructions: txInstructions,
     }).compileToV0Message();
-    console.log("   ✅ - 編譯交易消息");
+    console.log("   ✅ - Compiled transaction message");
     const transaction = new anchor.web3.VersionedTransaction(messageV0);
 
     if (signers.length > 0) {
       transaction.sign(signers);
     }
     await provider.wallet.signTransaction(transaction);
-    console.log("   ✅ - 交易已簽署");
+    console.log("   ✅ - Transaction signed");
 
     const txid = await provider.connection.sendTransaction(transaction, {
       maxRetries: 5,
     });
-    console.log("   ✅ - 交易已發送到網絡");
+    console.log("   ✅ - Transaction sent to network");
 
     const confirmation = await provider.connection.confirmTransaction({
       signature: txid,
@@ -318,9 +326,9 @@ describe("hedging_strategy", () => {
       lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
     });
     if (confirmation.value.err) {
-      throw new Error(`   ❌ - 交易未確認。\n原因：${confirmation.value.err}`);
+      throw new Error(`   ❌ - Transaction not confirmed.\nReason: ${confirmation.value.err}`);
     }
 
-    console.log("🎉 交易成功確認！");
+    console.log("🎉 Transaction confirmed successfully!");
   }
 });

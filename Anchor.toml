@@ -5,20 +5,20 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-access_control = "59s1DsR5srPzFUXkZB9QbhsTH6v8c1R8woYARPn9Boso"
-asset_manager = "7jSP9mvv2PshB7GtDPxD256eQHDCR4maoFSQ8XGmBL5W"
+access_control = "AzYgM6WwZLdQwRR2TEkMEjo78jcmAZK8NvDhp9DooKYg"
+asset_manager = "BTUNGZRPneBjkP7yEybK3dN4gjGrBvjgRqKgouJwfxwf"
 flexxcash-poc = "3a3whekXLP4nu9HPdbrtPp6rqe1XG7WwoddhrfQXZYmj"
-hedging_strategy = "c5D9rKEtdsXoHqXrcZPPLvJUJngHn9opfhLWh2SQX2V"
-lock_manager = "2XXVvc2QVB9EK7oZx29tTyi4modXGRbBpZzdJmo8YA4i"
-price_oracle = "F9Yjy49uum7bQjzvBupwHWpK4Qf7gFAh6kBRnKczcKK5"
-redemption_manager = "CvfEotmRMvkfq15NCBGLvJrQ4rKgXd7ktJiuouMYyyJ2"
-xxusd_token = "Fg6pqSHakbvfyK85qAjJLfeMG6pQMucQc6Ypfn44rGuB"
+hedging_strategy = "HhYQyTRcQ1sBpj1nnpbvgmqk6LEM8RaqnjQzzpRDeAmD"
+lock_manager = "ESvCxW7pEH5EdGVmgue3LMGV5kbpRKhwRskYiBSEjzxz"
+price_oracle = "9WgQXggiUsfN1w4rXGsxE4Zvv8BtTuqZ2NpFUUKLYwVf"
+redemption_manager = "6oWcQxSUJgY6XZ1vkq43jQsS2mvu4CMXzmfgrXMAc12g"
+xxusd_token = "FqMRAfap3AuW6PUHN9mTsyP76ofmboULZfp8QGoAwM6A"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "devnet"
+cluster = "Devnet"
 wallet = "~/.config/solana/new_id.json"
 
 [scripts]

@@ -12,7 +12,6 @@ import {
   SystemProgram,
 } from "@solana/web3.js";
 import BN from "bn.js";
-import * as fs from 'fs';
 
 describe("asset_manager", () => {
   const provider = anchor.AnchorProvider.env();
@@ -21,11 +20,7 @@ describe("asset_manager", () => {
   const program = anchor.workspace.AssetManager as Program<AssetManager>;
   const connection = provider.connection;
 
-  // 使用指定的錢包
-  const payer = Keypair.fromSecretKey(
-    Buffer.from(JSON.parse(fs.readFileSync('/home/dc/.config/solana/new_id.json', 'utf-8')))
-  );
-  const user = payer;
+  const user = provider.wallet.publicKey;
 
   const jupsolMint = new PublicKey("7eS55f4LP5xj4jqRp24uv5aPFak4gzue8jwb5949KDzP");
   const usdcMint = new PublicKey("EneKhgmdLQgfLtqC9aE52B1bMcFtjob6qMkDc5Q3mHx7");
@@ -42,29 +37,64 @@ describe("asset_manager", () => {
     return new BN(Math.floor(amount * Math.pow(10, decimals)));
   }
 
+  async function createAndSendV0Tx(txInstructions: anchor.web3.TransactionInstruction[], signers: anchor.web3.Keypair[] = []) {
+    let latestBlockhash = await provider.connection.getLatestBlockhash("confirmed");
+    console.log("   ✅ - Fetched latest blockhash. Last valid block height:", latestBlockhash.lastValidBlockHeight);
+
+    const messageV0 = new anchor.web3.TransactionMessage({
+      payerKey: provider.wallet.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions: txInstructions,
+    }).compileToV0Message();
+    console.log("   ✅ - Compiled transaction message");
+    const transaction = new anchor.web3.VersionedTransaction(messageV0);
+
+    if (signers.length > 0) {
+      transaction.sign(signers);
+    }
+    await provider.wallet.signTransaction(transaction);
+    console.log("   ✅ - Transaction signed");
+
+    const txid = await provider.connection.sendTransaction(transaction, {
+      maxRetries: 5,
+    });
+    console.log("   ✅ - Transaction sent to network");
+
+    const confirmation = await provider.connection.confirmTransaction({
+      signature: txid,
+      blockhash: latestBlockhash.blockhash,
+      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+    });
+    if (confirmation.value.err) {
+      throw new Error(`   ❌ - Transaction not confirmed.\nReason: ${confirmation.value.err}`);
+    }
+
+    console.log("🎉 Transaction confirmed successfully!");
+  }
+
   before(async () => {
     // Create user asset account (jupSOL)
     const userAssetAccountInfo = await getOrCreateAssociatedTokenAccount(
       connection,
-      payer,
+      provider.wallet as any,
       jupsolMint,
-      user.publicKey
+      user
     );
     userAssetAccount = userAssetAccountInfo.address;
 
     // Create user USDC account
     const userXxusdAccountInfo = await getOrCreateAssociatedTokenAccount(
       connection,
-      payer,
+      provider.wallet as any,
       usdcMint,
-      user.publicKey
+      user
     );
     userXxusdAccount = userXxusdAccountInfo.address;
 
     // Create Vault asset account
     const vaultAssetAccountInfo = await getOrCreateAssociatedTokenAccount(
       connection,
-      payer,
+      provider.wallet as any,
       jupsolMint,
       program.programId,
       true
@@ -74,7 +104,7 @@ describe("asset_manager", () => {
     // Create USDC Vault account
     const xxusdVaultAccountInfo = await getOrCreateAssociatedTokenAccount(
       connection,
-      payer,
+      provider.wallet as any,
       usdcMint,
       program.programId,
       true
@@ -92,27 +122,28 @@ describe("asset_manager", () => {
     oracle = Keypair.generate();
 
     // Initialize Program State
-    await program.methods
+    const initializeInstruction = await program.methods
       .initialize(jupsolMint)
       .accounts({
         state: programState,
-        authority: payer.publicKey,
-      })
-      .signers([payer])
-      .rpc();
+        authority: user,
+      } as any)
+      .instruction();
+
+    await createAndSendV0Tx([initializeInstruction]);
   });
 
   it("Deposits asset successfully", async () => {
     const depositAmount = uiToNative(0.1, 9); // 0.1 jupSOL
     const [userDepositPda] = PublicKey.findProgramAddressSync(
-      [Buffer.from("user_deposit"), user.publicKey.toBuffer()],
+      [Buffer.from("user_deposit"), user.toBuffer()],
       program.programId
     );
 
-    await program.methods
+    const depositInstruction = await program.methods
       .depositAsset(depositAmount)
       .accounts({
-        user: user.publicKey,
+        user: user,
         userAssetAccount: userAssetAccount,
         assetMint: jupsolMint,
         vaultAssetAccount: vaultAssetAccount,
@@ -121,8 +152,9 @@ describe("asset_manager", () => {
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       } as any)
-      .signers([payer])
-      .rpc();
+      .instruction();
+
+    await createAndSendV0Tx([depositInstruction]);
 
     // Verify deposit
     const userDepositAccount = await program.account.userDeposit.fetch(
@@ -138,22 +170,23 @@ describe("asset_manager", () => {
     const assetValue = new BN(1000000); // 1,000,000
     const productPrice = new BN(500000); // 500,000
     const [userDepositPda] = PublicKey.findProgramAddressSync(
-      [Buffer.from("user_deposit"), user.publicKey.toBuffer()],
+      [Buffer.from("user_deposit"), user.toBuffer()],
       program.programId
     );
 
-    await program.methods
+    const mintAndDistributeInstruction = await program.methods
       .mintAndDistributeXxusd(assetValue, productPrice)
       .accounts({
-        user: user.publicKey,
+        user: user,
         xxusdMint: usdcMint,
         xxusdVault: xxusdVaultAccount,
         userXxusdAccount: userXxusdAccount,
         userDeposit: userDepositPda,
         state: programState,
       } as any)
-      .signers([payer])
-      .rpc();
+      .instruction();
+
+    await createAndSendV0Tx([mintAndDistributeInstruction]);
 
     // Verify minting and distribution
     const userXxusdBalance = await connection.getTokenAccountBalance(userXxusdAccount);
@@ -169,14 +202,15 @@ describe("asset_manager", () => {
   it("Updates APY successfully", async () => {
     const newApy = new BN(800); // 8%
 
-    await program.methods
+    const updateApyInstruction = await program.methods
       .updateApy(newApy)
       .accounts({
         state: programState,
-        authority: payer.publicKey,
-      })
-      .signers([payer])
-      .rpc();
+        authority: user,
+      } as any)
+      .instruction();
+
+    await createAndSendV0Tx([updateApyInstruction]);
 
     const updatedState = await program.account.programState.fetch(programState);
     expect(updatedState.currentApy.toNumber()).to.equal(800);
@@ -185,14 +219,15 @@ describe("asset_manager", () => {
   it("Sets product price successfully", async () => {
     const newPrice = new BN(2000); // New price: 2,000
 
-    await program.methods
+    const setProductPriceInstruction = await program.methods
       .setProductPrice(newPrice)
       .accounts({
         state: programState,
-        authority: payer.publicKey,
-      })
-      .signers([payer])
-      .rpc();
+        authority: user,
+      } as any)
+      .instruction();
+
+    await createAndSendV0Tx([setProductPriceInstruction]);
 
     const updatedState = await program.account.programState.fetch(programState);
     expect(updatedState.productPrice.toNumber()).to.equal(2000);
