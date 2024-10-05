@@ -64,7 +64,7 @@ describe("access_control", () => {
 
   it("Activates emergency stop", async () => {
     await program.methods
-      .emergencyStop(true)
+      .emergencyStop()
       .accounts({
         accessControl: accessControlAccount.publicKey,
         admin: adminKeypair.publicKey,
@@ -78,9 +78,9 @@ describe("access_control", () => {
     expect(account.isPaused).to.be.true;
   });
 
-  it("Deactivates emergency stop", async () => {
+  it("Resumes after emergency stop", async () => {
     await program.methods
-      .emergencyStop(false)
+      .resume()
       .accounts({
         accessControl: accessControlAccount.publicKey,
         admin: adminKeypair.publicKey,
@@ -115,7 +115,7 @@ describe("access_control", () => {
     const nonAdminKeypair = anchor.web3.Keypair.generate();
     try {
       await program.methods
-        .emergencyStop(true)
+        .emergencyStop()
         .accounts({
           accessControl: accessControlAccount.publicKey,
           admin: nonAdminKeypair.publicKey,
@@ -125,6 +125,77 @@ describe("access_control", () => {
       expect.fail("Expected an error to be thrown");
     } catch (error: any) {
       expect(error.error.errorMessage).to.include("Unauthorized");
+    }
+  });
+
+  // New test cases for the added functionality
+
+  it("Fails to set invalid permissions", async () => {
+    try {
+      await program.methods
+        .setPermissions("USER", null as any)  // Trying to set an invalid permission
+        .accounts({
+          accessControl: accessControlAccount.publicKey,
+          admin: adminKeypair.publicKey,
+        })
+        .signers([adminKeypair])
+        .rpc();
+      expect.fail("Expected an error to be thrown");
+    } catch (error: any) {
+      expect(error.toString()).to.include("InvalidPermission");
+    }
+  });
+
+  it("Fails to activate emergency stop when already paused", async () => {
+    // First, activate emergency stop
+    await program.methods
+      .emergencyStop()
+      .accounts({
+        accessControl: accessControlAccount.publicKey,
+        admin: adminKeypair.publicKey,
+      })
+      .signers([adminKeypair])
+      .rpc();
+
+    // Then try to activate it again
+    try {
+      await program.methods
+        .emergencyStop()
+        .accounts({
+          accessControl: accessControlAccount.publicKey,
+          admin: adminKeypair.publicKey,
+        })
+        .signers([adminKeypair])
+        .rpc();
+      expect.fail("Expected an error to be thrown");
+    } catch (error: any) {
+      expect(error.toString()).to.include("AlreadyPaused");
+    }
+
+    // Resume the system for other tests
+    await program.methods
+      .resume()
+      .accounts({
+        accessControl: accessControlAccount.publicKey,
+        admin: adminKeypair.publicKey,
+      })
+      .signers([adminKeypair])
+      .rpc();
+  });
+
+  it("Fails to resume when not paused", async () => {
+    try {
+      await program.methods
+        .resume()
+        .accounts({
+          accessControl: accessControlAccount.publicKey,
+          admin: adminKeypair.publicKey,
+        })
+        .signers([adminKeypair])
+        .rpc();
+      expect.fail("Expected an error to be thrown");
+    } catch (error: any) {
+      expect(error.toString()).to.include("NotPaused");
     }
   });
 });

@@ -18,6 +18,9 @@ pub mod access_control {
         let access_control = &mut ctx.accounts.access_control;
         require!(ctx.accounts.admin.key() == access_control.admin, AccessControlError::Unauthorized);
 
+        // 檢查 is_allowed 參數的有效性
+        require!(is_allowed == true || is_allowed == false, AccessControlError::InvalidPermission);
+
         if let Some(permission) = access_control.permissions.iter_mut().find(|(r, _)| r == &role) {
             permission.1 = is_allowed;
         } else {
@@ -26,11 +29,23 @@ pub mod access_control {
         Ok(())
     }
 
-    pub fn emergency_stop(ctx: Context<EmergencyStop>, should_pause: bool) -> Result<()> {
+    pub fn emergency_stop(ctx: Context<EmergencyStop>) -> Result<()> {
         let access_control = &mut ctx.accounts.access_control;
         require!(ctx.accounts.admin.key() == access_control.admin, AccessControlError::Unauthorized);
 
-        access_control.is_paused = should_pause;
+        require!(!access_control.is_paused, AccessControlError::AlreadyPaused);
+
+        access_control.is_paused = true;
+        Ok(())
+    }
+
+    pub fn resume(ctx: Context<EmergencyStop>) -> Result<()> {
+        let access_control = &mut ctx.accounts.access_control;
+        require!(ctx.accounts.admin.key() == access_control.admin, AccessControlError::Unauthorized);
+
+        require!(access_control.is_paused, AccessControlError::NotPaused);
+
+        access_control.is_paused = false;
         Ok(())
     }
 }
@@ -69,4 +84,10 @@ pub struct AccessControl {
 pub enum AccessControlError {
     #[msg("Unauthorized access")]
     Unauthorized,
+    #[msg("Invalid permission value")]
+    InvalidPermission,
+    #[msg("System is already paused")]
+    AlreadyPaused,
+    #[msg("System is not paused")]
+    NotPaused,
 }
