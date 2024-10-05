@@ -145,6 +145,55 @@ describe("lock_manager", () => {
     expect(lockStatus.redemptionDeadline.toNumber()).to.be.above(0);
   });
 
+  it("Checks if within redemption window", async () => {
+    // This should return false as we're still in the lock period
+    const isWithinWindow = await lockManagerProgram.methods
+      .isWithinRedemptionWindow()
+      .accounts({
+        user: user.publicKey,
+        lockRecord: lockRecord,
+      })
+      .view();
+
+    expect(isWithinWindow).to.be.false;
+
+    // Fast forward time to just after the lock period
+    const lockRecordAccount = await lockManagerProgram.account.lockRecord.fetch(lockRecord);
+    const lockEndTime = lockRecordAccount.startTime.toNumber() + (lockRecordAccount.lockPeriod.toNumber() * 86400);
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(user.publicKey, lockEndTime - (await provider.connection.getBlockTime(await provider.connection.getSlot())) + 1),
+      "confirmed"
+    );
+
+    // Now it should return true
+    const isWithinWindowAfterLockPeriod = await lockManagerProgram.methods
+      .isWithinRedemptionWindow()
+      .accounts({
+        user: user.publicKey,
+        lockRecord: lockRecord,
+      })
+      .view();
+
+    expect(isWithinWindowAfterLockPeriod).to.be.true;
+
+    // Fast forward time to after the redemption window
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(user.publicKey, 15 * 86400), // 15 days later
+      "confirmed"
+    );
+
+    // Now it should return false again
+    const isWithinWindowAfterRedemptionPeriod = await lockManagerProgram.methods
+      .isWithinRedemptionWindow()
+      .accounts({
+        user: user.publicKey,
+        lockRecord: lockRecord,
+      })
+      .view();
+
+    expect(isWithinWindowAfterRedemptionPeriod).to.be.false;
+  });
+
   it("Fails to release twice in the same day", async () => {
     try {
       await lockManagerProgram.methods
@@ -192,13 +241,13 @@ describe("lock_manager", () => {
     }
   });
 
-  it("Fails to check lock status with invalid owner", async () => {
+  it("Fails to check redemption window with invalid owner", async () => {
     const invalidUser = anchor.web3.Keypair.generate();
     await provider.connection.requestAirdrop(invalidUser.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL);
 
     try {
       await lockManagerProgram.methods
-        .checkLockStatus()
+        .isWithinRedemptionWindow()
         .accounts({
           user: invalidUser.publicKey,
           lockRecord: lockRecord,

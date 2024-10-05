@@ -136,6 +136,31 @@ pub mod lock_manager {
             redemption_deadline,
         })
     }
+
+    pub fn is_within_redemption_window(ctx: Context<CheckRedemptionWindow>) -> Result<bool> {
+        let lock_record = &ctx.accounts.lock_record;
+        let current_time = Clock::get()?.unix_timestamp;
+
+        // 計算鎖定期結束時間
+        let lock_end_time = lock_record.start_time + (lock_record.lock_period as i64 * 86400);
+        
+        // 計算贖回窗口結束時間（鎖定期結束後14天）
+        let redemption_end_time = lock_end_time + (14 * 86400);
+
+        // 檢查當前時間是否在贖回窗口內
+        let is_within_window = current_time >= lock_end_time && current_time <= redemption_end_time;
+
+        // 發出事件以記錄檢查結果
+        emit!(RedemptionWindowCheckEvent {
+            user: ctx.accounts.user.key(),
+            is_within_window,
+            current_time,
+            lock_end_time,
+            redemption_end_time,
+        });
+
+        Ok(is_within_window)
+    }
 }
 
 #[derive(Accounts)]
@@ -217,6 +242,18 @@ pub struct CheckLockStatus<'info> {
     pub lock_record: Account<'info, LockRecord>,
 }
 
+#[derive(Accounts)]
+pub struct CheckRedemptionWindow<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    #[account(
+        seeds = [b"lock_record", user.key().as_ref()],
+        bump,
+        constraint = lock_record.owner == user.key() @ LockManagerError::InvalidOwner,
+    )]
+    pub lock_record: Account<'info, LockRecord>,
+}
+
 #[account]
 pub struct LockRecord {
     pub owner: Pubkey,
@@ -271,6 +308,15 @@ pub struct LockEvent {
 pub struct ReleaseEvent {
     pub user: Pubkey,
     pub amount: u64,
+}
+
+#[event]
+pub struct RedemptionWindowCheckEvent {
+    pub user: Pubkey,
+    pub is_within_window: bool,
+    pub current_time: i64,
+    pub lock_end_time: i64,
+    pub redemption_end_time: i64,
 }
 
 // 替換為實際的 AssetManager 程序 ID
