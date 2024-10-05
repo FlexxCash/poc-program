@@ -10,6 +10,7 @@ xxusd_token = "H1G2rsSaNmDovqg1wBmDZq23q9KYAMZdk3pNj4SZwhWS"
 asset_manager = "91hM5ZdHVbH7tH1a21QHRmPEFkHWS532DfcpGPBUkdAF"
 lock_manager = "AmP3jbYmGguEcmfr6ies1doxrvWQSWaB5Y37pN7Jowu1"
 redemption_manager = "BhBNrpuriccL3n6T1QvottBmZ1oHMeuaZus4UXjodxz9"
+hedging_strategy = "4QrrLAhjf24ufosccAAUvsw2cVnw5mpiqLwxuZxjgd1i"
 
 [registry]
 url = "https://api.apr.dev"
