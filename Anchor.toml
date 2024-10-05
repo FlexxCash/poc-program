@@ -9,6 +9,7 @@ access_control = "7XqCdxDjk9QheBci6JQBzH8x6Y3Ny5TKPpcp8VvfgsYv"
 xxusd_token = "H1G2rsSaNmDovqg1wBmDZq23q9KYAMZdk3pNj4SZwhWS"
 asset_manager = "91hM5ZdHVbH7tH1a21QHRmPEFkHWS532DfcpGPBUkdAF"
 lock_manager = "AmP3jbYmGguEcmfr6ies1doxrvWQSWaB5Y37pN7Jowu1"
+redemption_manager = "BhBNrpuriccL3n6T1QvottBmZ1oHMeuaZus4UXjodxz9"
 
 [registry]
 url = "https://api.apr.dev"
