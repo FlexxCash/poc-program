@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("AzYgM6WwZLdQwRR2TEkMEjo78jcmAZK8NvDhp9DooKYg");
+declare_id!("Dj76V2fYa7WXc8w2W3dXrb2mFhqHFPVvXuU2Y9oPLguC");
 
 #[program]
 pub mod access_control {
@@ -17,9 +17,6 @@ pub mod access_control {
     pub fn set_permissions(ctx: Context<SetPermissions>, role: String, is_allowed: bool) -> Result<()> {
         let access_control = &mut ctx.accounts.access_control;
         require!(ctx.accounts.admin.key() == access_control.admin, AccessControlError::Unauthorized);
-
-        // 檢查 is_allowed 參數的有效性
-        require!(is_allowed == true || is_allowed == false, AccessControlError::InvalidPermission);
 
         if let Some(permission) = access_control.permissions.iter_mut().find(|(r, _)| r == &role) {
             permission.1 = is_allowed;
@@ -52,7 +49,7 @@ pub mod access_control {
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = admin, space = 8 + 32 + 1 + 64 * 10)] // Assume max 10 roles
+    #[account(init, payer = admin, space = 8 + 32 + 1 + 256 * 10)] // 增加每個角色的空間
     pub access_control: Account<'info, AccessControl>,
     #[account(mut)]
     pub admin: Signer<'info>,
