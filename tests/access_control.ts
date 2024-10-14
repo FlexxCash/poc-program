@@ -1,6 +1,6 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { PublicKey, Keypair } from "@solana/web3.js";
+import { PublicKey, Keypair, Signer } from "@solana/web3.js";
 import { expect } from "chai";
 import { AccessControl } from "../target/types/access_control";
 
@@ -9,7 +9,7 @@ describe("AccessControl Tests on Devnet", () => {
 
   const program = anchor.workspace.AccessControl as Program<AccessControl>;
   const provider = anchor.getProvider() as anchor.AnchorProvider;
-  const user = provider.wallet.publicKey;
+  const user = provider.wallet as Signer; // 使用 provider.wallet 作為 Signer
 
   let accessControlPDA: PublicKey;
   let bump: number;
@@ -18,7 +18,7 @@ describe("AccessControl Tests on Devnet", () => {
 
   before(async () => {
     [accessControlPDA, bump] = await PublicKey.findProgramAddress(
-      [Buffer.from("access-control"), user.toBuffer()],
+      [Buffer.from("access-control"), (user.publicKey as PublicKey).toBuffer()],
       program.programId
     );
     console.log("AccessControl PDA:", accessControlPDA.toBase58());
@@ -26,31 +26,38 @@ describe("AccessControl Tests on Devnet", () => {
   });
 
   it("Initializes the access control account", async () => {
-    try {
-      await program.methods.initialize()
-        .accounts({
-          accessControl: accessControlPDA,
-          admin: user,
-        })
-        .rpc();
+    const seeds = [Buffer.from("access-control"), (user.publicKey as PublicKey).toBuffer()];
+    await program.methods.initialize()
+      .accounts({
+        accessControl: accessControlPDA,
+        admin: user.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([user])
+      .preInstructions([
+        await program.account.accessControl.createInstruction(accessControlPDA, bump),
+      ])
+      .rpc({
+        skipPreflight: false,
+        commitment: "confirmed",
+        // 使用 seeds 來模擬 PDA 的簽名
+        signersSeeds: [seeds, [bump]],
+      });
 
-      const accountInfo = await provider.connection.getAccountInfo(accessControlPDA);
-      const accessControlAccount = program.coder.accounts.decode("AccessControl", accountInfo!.data);
-      expect(accessControlAccount.admin.toString()).to.equal(user.toString());
-      expect(accessControlAccount.isPaused).to.be.false;
-      expect(accessControlAccount.permissions.length).to.equal(0);
-    } catch (error) {
-      console.error("Initialization Failed:", error);
-      throw error;
-    }
+    const accountInfo = await provider.connection.getAccountInfo(accessControlPDA);
+    const accessControlAccount = program.coder.accounts.decode("AccessControl", accountInfo!.data);
+    expect(accessControlAccount.admin.toString()).to.equal(user.publicKey.toString());
+    expect(accessControlAccount.isPaused).to.be.false;
+    expect(accessControlAccount.permissions.length).to.equal(0);
   });
 
   it("Sets permissions as admin", async () => {
     await program.methods.setPermissions(MANAGER_ROLE, true)
       .accounts({
         accessControl: accessControlPDA,
-        admin: user,
+        admin: user.publicKey,
       })
+      .signers([user])
       .rpc();
 
     const accountInfo = await provider.connection.getAccountInfo(accessControlPDA);
@@ -66,8 +73,9 @@ describe("AccessControl Tests on Devnet", () => {
     await program.methods.emergencyStop()
       .accounts({
         accessControl: accessControlPDA,
-        admin: user,
+        admin: user.publicKey,
       })
+      .signers([user])
       .rpc();
 
     const accountInfo = await provider.connection.getAccountInfo(accessControlPDA);
@@ -79,8 +87,9 @@ describe("AccessControl Tests on Devnet", () => {
     await program.methods.resume()
       .accounts({
         accessControl: accessControlPDA,
-        admin: user,
+        admin: user.publicKey,
       })
+      .signers([user])
       .rpc();
 
     const accountInfo = await provider.connection.getAccountInfo(accessControlPDA);
@@ -90,6 +99,13 @@ describe("AccessControl Tests on Devnet", () => {
 
   it("Fails when non-admin tries to set permissions", async () => {
     const nonAdminKeypair = Keypair.generate();
+
+    // 為 nonAdminKeypair 提供一些 SOL 以支付交易費用
+    const airdropSignature = await provider.connection.requestAirdrop(
+      nonAdminKeypair.publicKey,
+      anchor.web3.LAMPORTS_PER_SOL
+    );
+    await provider.connection.confirmTransaction(airdropSignature);
 
     try {
       await program.methods.setPermissions(MANAGER_ROLE, true)
@@ -107,6 +123,13 @@ describe("AccessControl Tests on Devnet", () => {
 
   it("Fails when non-admin tries to activate emergency stop", async () => {
     const nonAdminKeypair = Keypair.generate();
+
+    // 為 nonAdminKeypair 提供一些 SOL 以支付交易費用
+    const airdropSignature = await provider.connection.requestAirdrop(
+      nonAdminKeypair.publicKey,
+      anchor.web3.LAMPORTS_PER_SOL
+    );
+    await provider.connection.confirmTransaction(airdropSignature);
 
     try {
       await program.methods.emergencyStop()
@@ -127,8 +150,9 @@ describe("AccessControl Tests on Devnet", () => {
       await program.methods.setPermissions("INVALID_ROLE", true)
         .accounts({
           accessControl: accessControlPDA,
-          admin: user,
+          admin: user.publicKey,
         })
+        .signers([user])
         .rpc();
       expect.fail("Transaction should have failed");
     } catch (error: any) {
@@ -141,8 +165,9 @@ describe("AccessControl Tests on Devnet", () => {
     await program.methods.emergencyStop()
       .accounts({
         accessControl: accessControlPDA,
-        admin: user,
+        admin: user.publicKey,
       })
+      .signers([user])
       .rpc();
 
     // Then try to activate it again
@@ -150,8 +175,9 @@ describe("AccessControl Tests on Devnet", () => {
       await program.methods.emergencyStop()
         .accounts({
           accessControl: accessControlPDA,
-          admin: user,
+          admin: user.publicKey,
         })
+        .signers([user])
         .rpc();
       expect.fail("Transaction should have failed");
     } catch (error: any) {
@@ -162,8 +188,9 @@ describe("AccessControl Tests on Devnet", () => {
     await program.methods.resume()
       .accounts({
         accessControl: accessControlPDA,
-        admin: user,
+        admin: user.publicKey,
       })
+      .signers([user])
       .rpc();
   });
 
@@ -172,8 +199,9 @@ describe("AccessControl Tests on Devnet", () => {
       await program.methods.resume()
         .accounts({
           accessControl: accessControlPDA,
-          admin: user,
+          admin: user.publicKey,
         })
+        .signers([user])
         .rpc();
       expect.fail("Transaction should have failed");
     } catch (error: any) {
