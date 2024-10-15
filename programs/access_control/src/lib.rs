@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("CxG6PB8YC9aAjZ7NA3CjyuCY7nUBysiuBdwUtMkJL4H1");
+declare_id!("2JWqmJFU9Sf2rQy8NZG2ST4Tty7QwR4j8K3KnTJm6JAU");
 
 #[program]
 pub mod access_control {
@@ -12,9 +12,15 @@ pub mod access_control {
         access_control.is_paused = false;
         access_control.permissions = Vec::new();
         
-        // 添加日誌輸出
-        msg!("AccessControl PDA initialized: {:?}", ctx.accounts.access_control.key());
-        msg!("Admin: {:?}", ctx.accounts.admin.key());
+        let pda_key = access_control.key();
+        let admin_key = ctx.accounts.admin.key();
+        let is_paused = access_control.is_paused;
+        let permissions_len = access_control.permissions.len();
+        
+        msg!("AccessControl PDA initialized: {:?}", pda_key);
+        msg!("Admin: {:?}", admin_key);
+        msg!("Is paused: {}", is_paused);
+        msg!("Permissions length: {}", permissions_len);
         
         Ok(())
     }
@@ -38,6 +44,15 @@ pub mod access_control {
         access_control.is_paused = false;
         Ok(())
     }
+
+    pub fn close_account(ctx: Context<CloseAccount>) -> Result<()> {
+        // 檢查調用者是否為管理員
+        require!(ctx.accounts.admin.key() == ctx.accounts.access_control.admin, AccessControlError::Unauthorized);
+        
+        // 帳戶將自動關閉，因為我們在 CloseAccount 結構中使用了 close 約束
+        msg!("AccessControl account closed successfully");
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -45,7 +60,7 @@ pub struct Initialize<'info> {
     #[account(
         init,
         payer = admin,
-        space = 8 + 32 + 1 + 4 + (32 + 1) * 10 + 64, // 增加 64 字節的額外空間
+        space = 8 + 32 + 1 + 4 + (32 + 1) * 20 + 128, // 增加空間
         seeds = [b"access_control", admin.key().as_ref()],
         bump
     )]
@@ -74,6 +89,19 @@ pub struct EmergencyStop<'info> {
         bump
     )]
     pub access_control: Account<'info, AccessControl>,
+    pub admin: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct CloseAccount<'info> {
+    #[account(
+        mut,
+        close = admin,
+        seeds = [b"access_control", admin.key().as_ref()],
+        bump
+    )]
+    pub access_control: Account<'info, AccessControl>,
+    #[account(mut)]
     pub admin: Signer<'info>,
 }
 
