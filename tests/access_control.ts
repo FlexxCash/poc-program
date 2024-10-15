@@ -1,12 +1,11 @@
 import * as anchor from "@coral-xyz/anchor";
-import { Program, AnchorProvider, BN } from "@coral-xyz/anchor";
-import { PublicKey, Keypair, Signer, Transaction, VersionedTransaction } from "@solana/web3.js";
+import { Program } from "@coral-xyz/anchor";
+import { PublicKey, Keypair, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { expect } from "chai";
 import { AccessControl } from "../target/types/access_control";
 import * as fs from "fs";
 import * as path from "path";
 
-// 定義 AccessControl 帳戶結構
 interface AccessControlAccount {
   admin: PublicKey;
   isPaused: boolean;
@@ -21,17 +20,13 @@ const loadKeypair = (filePath: string): Keypair => {
 };
 
 class KeypairWallet implements anchor.Wallet {
-  publicKey: PublicKey;
-  payer: Keypair;
-
-  constructor(payer: Keypair) {
+  constructor(public readonly payer: Keypair) {
     this.payer = payer;
-    this.publicKey = payer.publicKey;
   }
 
   async signTransaction<T extends Transaction | VersionedTransaction>(tx: T): Promise<T> {
     if (tx instanceof Transaction) {
-      tx.sign(this.payer);
+      tx.partialSign(this.payer);
       return tx as T;
     } else {
       throw new Error("VersionedTransaction signing not implemented");
@@ -41,6 +36,10 @@ class KeypairWallet implements anchor.Wallet {
   async signAllTransactions<T extends Transaction | VersionedTransaction>(txs: T[]): Promise<T[]> {
     return Promise.all(txs.map(tx => this.signTransaction(tx)));
   }
+
+  get publicKey(): PublicKey {
+    return this.payer.publicKey;
+  }
 }
 
 const adminKeypair: Keypair = loadKeypair("/home/dc/.config/solana/new_id.json");
@@ -49,7 +48,7 @@ const nonAdminKeypair: Keypair = loadKeypair("/home/dc/.config/solana/nonAdmin.j
 describe("AccessControl Tests on Devnet", () => {
   const wallet = new KeypairWallet(adminKeypair);
   const connection = new anchor.web3.Connection("https://api.devnet.solana.com", "confirmed");
-  const provider = new AnchorProvider(connection, wallet, AnchorProvider.defaultOptions());
+  const provider = new anchor.AnchorProvider(connection, wallet, { commitment: "confirmed" });
   anchor.setProvider(provider);
 
   const program = anchor.workspace.AccessControl as Program<AccessControl>;
@@ -82,26 +81,21 @@ describe("AccessControl Tests on Devnet", () => {
     if (accountInfo === null) {
       throw new Error(`AccessControl account not found at ${pubkey.toBase58()}. Please check initialization.`);
     }
-    return program.coder.accounts.decode("AccessControl", accountInfo.data);
+    console.log("Raw account data:", accountInfo.data.toString('hex'));
+    try {
+      const decodedAccount = program.coder.accounts.decode("AccessControl", accountInfo.data);
+      console.log("Decoded account:", decodedAccount);
+      return decodedAccount as AccessControlAccount;
+    } catch (error) {
+      console.error("Error decoding account data:", error);
+      throw error;
+    }
   };
 
-  before(async () => {
-    [accessControlPDA, bump] = await PublicKey.findProgramAddress(
-      [Buffer.from("access_control"), adminKeypair.publicKey.toBuffer()],
-      program.programId
-    );
-    console.log("Expected AccessControl PDA:", accessControlPDA.toBase58());
-    console.log("PDA bump:", bump);
-    console.log("Admin:", adminKeypair.publicKey.toBase58());
-    console.log("Program ID:", program.programId.toBase58());
-
-    await closeAccountIfExists(accessControlPDA);
-  });
-
-  it("Initializes the access control account", async () => {
+  const initializeAccessControl = async () => {
+    console.log("Initializing AccessControl account...");
     try {
-      console.log("Initializing AccessControl account...");
-      const tx = await program.methods.initialize()
+      const tx = await program.methods.initialize(bump)
         .accounts({
           accessControl: accessControlPDA,
           admin: adminKeypair.publicKey,
@@ -114,32 +108,65 @@ describe("AccessControl Tests on Devnet", () => {
       await provider.connection.confirmTransaction(tx, "confirmed");
       console.log("Transaction confirmed");
 
-      // 立即檢查帳戶是否存在
       const accountInfo = await provider.connection.getAccountInfo(accessControlPDA);
       if (accountInfo === null) {
         throw new Error("Failed to create AccessControl account");
       }
       console.log("AccessControl account created successfully");
+    } catch (error) {
+      console.error("Error initializing AccessControl account:", error);
+      throw error;
+    }
+  };
 
-      console.log("Fetching account info...");
-      console.log("Account info:", accountInfo);
-      console.log("Raw account data:", accountInfo.data.toString('hex'));
-      
-      console.log("Decoding account data...");
+  const ensureAccessControlInitialized = async () => {
+    const accountInfo = await provider.connection.getAccountInfo(accessControlPDA);
+    if (accountInfo === null) {
+      console.log("AccessControl account not found. Initializing...");
+      await initializeAccessControl();
+    } else {
+      console.log("AccessControl account already exists");
+    }
+  };
+
+  before(async () => {
+    [accessControlPDA, bump] = await PublicKey.findProgramAddress(
+      [Buffer.from("access_control"), adminKeypair.publicKey.toBuffer()],
+      program.programId
+    );
+    console.log("Expected AccessControl PDA:", accessControlPDA.toBase58());
+    console.log("PDA bump:", bump);
+    console.log("Admin:", adminKeypair.publicKey.toBase58());
+    console.log("Non-Admin:", nonAdminKeypair.publicKey.toBase58());
+    console.log("Program ID:", program.programId.toBase58());
+
+    await closeAccountIfExists(accessControlPDA);
+    await ensureAccessControlInitialized();
+  });
+
+  it("Initializes the access control account", async () => {
+    try {
       const accessControlAccount = await getAccessControlAccount(accessControlPDA);
       console.log("Decoded AccessControl account:", accessControlAccount);
-      
       console.log("Actual AccessControl PDA:", accessControlPDA.toBase58());
+
       expect(accessControlAccount.admin.toString()).to.equal(adminKeypair.publicKey.toString());
       expect(accessControlAccount.isPaused).to.be.false;
       expect(accessControlAccount.permissions.length).to.equal(0);
     } catch (error) {
       console.error("Initialization error:", error);
+      if (error instanceof anchor.AnchorError) {
+        console.error("Error code:", error.error.errorCode.code);
+        console.error("Error message:", error.error.errorMessage);
+        console.error("Error origin:", error.error.origin);
+        console.error("Compared values:", error.error.comparedValues);
+      }
       throw error;
     }
   });
 
   it("Fails when non-admin tries to activate emergency stop", async () => {
+    await ensureAccessControlInitialized();
     try {
       await program.methods.emergencyStop()
         .accounts({
@@ -157,6 +184,7 @@ describe("AccessControl Tests on Devnet", () => {
   });
 
   it("Activates emergency stop successfully", async () => {
+    await ensureAccessControlInitialized();
     try {
       await program.methods.emergencyStop()
         .accounts({

@@ -5,14 +5,14 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-access_control = "2JWqmJFU9Sf2rQy8NZG2ST4Tty7QwR4j8K3KnTJm6JAU"
-asset_manager = "BqWLtQ2GHCoHoCpqhvyKeXW6Mek1t5eSseTC8CpQoBkU"
+access_control = "4kjF7HMVZN4S5x3kh9EZ4mUK5WbmpdrZMncv1zzakikd"
+asset_manager = "AjBujFb3FUqwK68TwviupnwTTGsdftF1uNGDnepn2n4A"
 flexxcash-poc = "3a3whekXLP4nu9HPdbrtPp6rqe1XG7WwoddhrfQXZYmj"
-hedging_strategy = "5VwhfjgZEqC5C7hjbyniRTwMhbKGBAM3RVBmDzdy6CEg"
-lock_manager = "C1bYYuja1ze1wsJWd1Fo31jWB1nP1miX5Xq25R3mSKmM"
-price_oracle = "DEBC37xPGm1wiYqiLCZZy4dquPnukeiYzFASirNdnoJz"
-redemption_manager = "93wY4rMgYBcgPfYKiPFX3ib9xp1k3onW2W1aP5FX9JCT"
-xxusd_token = "GxjY9UDfh8axqTyXnnBz4jhspkoKAoMzdbrWSG2tg6X6"
+hedging_strategy = "DNwntRWby3UTYuDtp7nqPPJp9dwoaF5n9PUxv7Z7a1mB"
+lock_manager = "4JcTcdcjoQzuQm2sEMjHC9NmUroHnxz6SKmq9HGvXDiC"
+price_oracle = "2UWkTb3Y2zWmjhBbM5r3pv51jBkHr1tK4q4DE8Dnr8sB"
+redemption_manager = "4cpZCegz9towsw4UU8E4YmZx4N7D9pC5ocpAYuMEtFLt"
+xxusd_token = "D5THoCoahHznfsRUVPNNrQu1ruggy7w78hzh9j3yUXe2"
 
 [registry]
 url = "https://api.apr.dev"

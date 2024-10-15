@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("4fVxYdUoHcPiHSv7wA8fr5dY2R4uBTVKfrc1KgFeaMNh");
+declare_id!("5H9FX5DotjuY2YaouCjDRDoVdftBrSGrLcp2yQKwGH8E");
 
 #[program]
 pub mod flexxcash_poc {

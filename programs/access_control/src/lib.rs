@@ -1,12 +1,12 @@
 use anchor_lang::prelude::*;
 
-declare_id!("2JWqmJFU9Sf2rQy8NZG2ST4Tty7QwR4j8K3KnTJm6JAU");
+declare_id!("4kjF7HMVZN4S5x3kh9EZ4mUK5WbmpdrZMncv1zzakikd");
 
 #[program]
 pub mod access_control {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+    pub fn initialize(ctx: Context<Initialize>, bump: u8) -> Result<()> {
         let access_control = &mut ctx.accounts.access_control;
         access_control.admin = ctx.accounts.admin.key();
         access_control.is_paused = false;
@@ -21,6 +21,7 @@ pub mod access_control {
         msg!("Admin: {:?}", admin_key);
         msg!("Is paused: {}", is_paused);
         msg!("Permissions length: {}", permissions_len);
+        msg!("Bump: {}", bump);
         
         Ok(())
     }
@@ -32,6 +33,7 @@ pub mod access_control {
         require!(!access_control.is_paused, AccessControlError::AlreadyPaused);
 
         access_control.is_paused = true;
+        msg!("Emergency stop activated by admin: {:?}", ctx.accounts.admin.key());
         Ok(())
     }
 
@@ -42,15 +44,14 @@ pub mod access_control {
         require!(access_control.is_paused, AccessControlError::NotPaused);
 
         access_control.is_paused = false;
+        msg!("System resumed by admin: {:?}", ctx.accounts.admin.key());
         Ok(())
     }
 
     pub fn close_account(ctx: Context<CloseAccount>) -> Result<()> {
-        // 檢查調用者是否為管理員
         require!(ctx.accounts.admin.key() == ctx.accounts.access_control.admin, AccessControlError::Unauthorized);
         
-        // 帳戶將自動關閉，因為我們在 CloseAccount 結構中使用了 close 約束
-        msg!("AccessControl account closed successfully");
+        msg!("AccessControl account closed by admin: {:?}", ctx.accounts.admin.key());
         Ok(())
     }
 }
@@ -60,7 +61,7 @@ pub struct Initialize<'info> {
     #[account(
         init,
         payer = admin,
-        space = 8 + 32 + 1 + 4 + (32 + 1) * 20 + 128, // 增加空間
+        space = 8 + 32 + 1 + 4 + (32 + 1) * 20 + 128,
         seeds = [b"access_control", admin.key().as_ref()],
         bump
     )]
