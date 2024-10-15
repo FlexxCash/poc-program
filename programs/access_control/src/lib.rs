@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("6E1Ng9G1PUUeY6evpb16affGPXuNt1Lgn8ZRvaaqZjGT");
+declare_id!("CxG6PB8YC9aAjZ7NA3CjyuCY7nUBysiuBdwUtMkJL4H1");
 
 #[program]
 pub mod access_control {
@@ -11,18 +11,11 @@ pub mod access_control {
         access_control.admin = ctx.accounts.admin.key();
         access_control.is_paused = false;
         access_control.permissions = Vec::new();
-        Ok(())
-    }
-
-    pub fn set_permissions(ctx: Context<SetPermissions>, role: String, is_allowed: bool) -> Result<()> {
-        let access_control = &mut ctx.accounts.access_control;
-        require!(ctx.accounts.admin.key() == access_control.admin, AccessControlError::Unauthorized);
-
-        if let Some(permission) = access_control.permissions.iter_mut().find(|(r, _)| r == &role) {
-            permission.1 = is_allowed;
-        } else {
-            access_control.permissions.push((role, is_allowed));
-        }
+        
+        // 添加日誌輸出
+        msg!("AccessControl PDA initialized: {:?}", ctx.accounts.access_control.key());
+        msg!("Admin: {:?}", ctx.accounts.admin.key());
+        
         Ok(())
     }
 
@@ -49,7 +42,13 @@ pub mod access_control {
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = admin, space = 8 + 32 + 1 + 256 * 10)] // 增加每個角色的空間
+    #[account(
+        init,
+        payer = admin,
+        space = 8 + 32 + 1 + 4 + (32 + 1) * 10 + 64, // 增加 64 字節的額外空間
+        seeds = [b"access_control", admin.key().as_ref()],
+        bump
+    )]
     pub access_control: Account<'info, AccessControl>,
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -58,14 +57,22 @@ pub struct Initialize<'info> {
 
 #[derive(Accounts)]
 pub struct SetPermissions<'info> {
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"access_control", admin.key().as_ref()],
+        bump
+    )]
     pub access_control: Account<'info, AccessControl>,
     pub admin: Signer<'info>,
 }
 
 #[derive(Accounts)]
 pub struct EmergencyStop<'info> {
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"access_control", admin.key().as_ref()],
+        bump
+    )]
     pub access_control: Account<'info, AccessControl>,
     pub admin: Signer<'info>,
 }
