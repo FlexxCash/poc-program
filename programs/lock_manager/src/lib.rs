@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 use anchor_spl::associated_token::AssociatedToken;
 
-declare_id!("HG1tmtwiHUR4WGNcjsBP3wbr3a9h3DgJuDtvECdVKt7s");
+declare_id!("FuHbrWPearWxCeCSjHjUSA4C3ond2nSPjyctQ6XyCfk4");
 
 #[program]
 pub mod lock_manager {

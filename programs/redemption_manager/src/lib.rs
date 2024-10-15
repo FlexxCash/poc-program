@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Burn};
 use solana_program::native_token::LAMPORTS_PER_SOL;
 
-declare_id!("GpjtkJTXGHzHY7uxP1XaQfRfKnarzXuY5r2oyNGmxD4R");
+declare_id!("HtB62J3fEbqu1NwevNkpVpoJjUMGsSG7zLWrH2Tvjrt5");
 
 #[program]
 pub mod redemption_manager {
