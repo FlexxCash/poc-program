@@ -2,7 +2,8 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { PriceOracle } from "../target/types/price_oracle";
 import { expect } from "chai";
-import { PublicKey, Keypair } from "@solana/web3.js";
+import { PublicKey, Keypair, SystemProgram, TransactionInstruction, Transaction } from "@solana/web3.js";
+import { Buffer } from "buffer";
 
 describe("PriceOracle Tests on Devnet", () => {
   const provider = anchor.AnchorProvider.env();
@@ -13,8 +14,15 @@ describe("PriceOracle Tests on Devnet", () => {
 
   const oracleAccount = Keypair.generate();
 
-  const mockSolFeed = new PublicKey("GvDMxPzN1sCj7L26YDK2HnMRXEQmQ2aemov8YBtPS7vR");
-  const mockInterestAssetFeed = new PublicKey("4NiWaTuje7SVe9DN1vfnX7m1qBC7DnUxwRxbdgEDUGX1");
+  const mockSolFeed = Keypair.generate();
+  const mockInterestAssetFeed = Keypair.generate();
+
+  // 模擬 PullFeedAccountData 結構
+  const mockSolFeedData = Buffer.alloc(8 + 8); // 假設包含價格和其他必要字段
+  const mockInterestAssetFeedData = Buffer.alloc(8 + 8); // 根據實際結構調整大小
+  // 假設 buffer 中包含價格數據，根據需要填充
+  mockSolFeedData.writeBigUInt64BE(BigInt(3000), 0); // 假設 SOL 價格為 3000
+  mockInterestAssetFeedData.writeBigUInt64BE(BigInt(150), 0); // 假設 Interest Asset 價格為 150
 
   async function createAndSendV0Tx(txInstructions: anchor.web3.TransactionInstruction[], signers: Keypair[] = []) {
     let latestBlockhash = await provider.connection.getLatestBlockhash("confirmed");
@@ -45,7 +53,7 @@ describe("PriceOracle Tests on Devnet", () => {
       lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
     });
     if (confirmation.value.err) {
-      throw new Error(`   ❌ - Transaction not confirmed.\nReason: ${confirmation.value.err}`);
+      throw new Error(`   ❌ - Transaction not confirmed.\nReason: ${JSON.stringify(confirmation.value.err)}`);
     }
 
     console.log("🎉 Transaction confirmed successfully!");
@@ -53,21 +61,62 @@ describe("PriceOracle Tests on Devnet", () => {
 
   before(async () => {
     try {
+      // 創建並初始化 mockSolFeed 賬戶
+      const createSolFeedIx = SystemProgram.createAccount({
+        fromPubkey: user,
+        newAccountPubkey: mockSolFeed.publicKey,
+        space: mockSolFeedData.length,
+        lamports: await provider.connection.getMinimumBalanceForRentExemption(mockSolFeedData.length),
+        programId: new PublicKey("86q3eW5qBFL5SpjpAAAckwMk5Ay4rv4wGbxNmFVQLCk6"), // 替換為 Switchboard 項目程式 ID
+      });
+
+      const initSolFeedIx = new TransactionInstruction({
+        keys: [{ pubkey: mockSolFeed.publicKey, isSigner: false, isWritable: true }],
+        programId: new PublicKey("86q3eW5qBFL5SpjpAAAckwMk5Ay4rv4wGbxNmFVQLCk6"), // 替換為 Switchboard 項目程式 ID
+        data: mockSolFeedData, // 這裡假設程式能夠解析這個數據
+      });
+
+      // 創建並初始化 mockInterestAssetFeed 賬戶
+      const createInterestAssetFeedIx = SystemProgram.createAccount({
+        fromPubkey: user,
+        newAccountPubkey: mockInterestAssetFeed.publicKey,
+        space: mockInterestAssetFeedData.length,
+        lamports: await provider.connection.getMinimumBalanceForRentExemption(mockInterestAssetFeedData.length),
+        programId: new PublicKey("86q3eW5qBFL5SpjpAAAckwMk5Ay4rv4wGbxNmFVQLCk6"), // 替換為 Switchboard 項目程式 ID
+      });
+
+      const initInterestAssetFeedIx = new TransactionInstruction({
+        keys: [{ pubkey: mockInterestAssetFeed.publicKey, isSigner: false, isWritable: true }],
+        programId: new PublicKey("86q3eW5qBFL5SpjpAAAckwMk5Ay4rv4wGbxNmFVQLCk6"), // 替換為 Switchboard 項目程式 ID
+        data: mockInterestAssetFeedData, // 這裡假設程式能夠解析這個數據
+      });
+
+      // 發送交易初始化 Feed 賬戶
+      await createAndSendV0Tx([
+        createSolFeedIx,
+        initSolFeedIx,
+        createInterestAssetFeedIx,
+        initInterestAssetFeedIx,
+      ], [mockSolFeed, mockInterestAssetFeed]);
+
+      console.log("Mock Feed accounts initialized successfully");
+
+      // 初始化 Oracle 賬戶
       const initializeInstruction = await program.methods
         .initialize()
         .accounts({
           oracleAccount: oracleAccount.publicKey,
           authority: provider.wallet.publicKey,
-          solFeed: mockSolFeed,
-          interestAssetFeed: mockInterestAssetFeed,
-          systemProgram: anchor.web3.SystemProgram.programId,
+          solFeed: mockSolFeed.publicKey,
+          interestAssetFeed: mockInterestAssetFeed.publicKey,
+          system_program: SystemProgram.programId,
         } as any)
         .instruction();
 
       await createAndSendV0Tx([initializeInstruction], [oracleAccount]);
       console.log("Oracle account initialized successfully");
     } catch (error) {
-      console.error("Failed to initialize Oracle account:", error);
+      console.error("Failed to initialize accounts:", error);
       throw error;
     }
   });
@@ -75,8 +124,8 @@ describe("PriceOracle Tests on Devnet", () => {
   it("Initializes the oracle account", async () => {
     const account = await program.account.oracleAccount.fetch(oracleAccount.publicKey);
     expect(account.authority.toString()).to.equal(provider.wallet.publicKey.toString());
-    expect(account.solFeed.toString()).to.equal(mockSolFeed.toString());
-    expect(account.interestAssetFeed.toString()).to.equal(mockInterestAssetFeed.toString());
+    expect(account.solFeed.toString()).to.equal(mockSolFeed.publicKey.toString());
+    expect(account.interestAssetFeed.toString()).to.equal(mockInterestAssetFeed.publicKey.toString());
     expect(account.lastUpdateTimestampSol.toNumber()).to.equal(0);
     expect(account.cachedPriceSol.toNumber()).to.equal(0);
     expect(account.lastUpdateTimestampInterestAsset.toNumber()).to.equal(0);
@@ -87,8 +136,8 @@ describe("PriceOracle Tests on Devnet", () => {
       .getPrice("SOL")
       .accounts({
         oracleAccount: oracleAccount.publicKey,
-        solFeed: mockSolFeed,
-        interestAssetFeed: mockInterestAssetFeed,
+        solFeed: mockSolFeed.publicKey,
+        interestAssetFeed: mockInterestAssetFeed.publicKey,
       } as any)
       .instruction();
 
@@ -107,8 +156,8 @@ describe("PriceOracle Tests on Devnet", () => {
       .getPrice("SOL")
       .accounts({
         oracleAccount: oracleAccount.publicKey,
-        solFeed: mockSolFeed,
-        interestAssetFeed: mockInterestAssetFeed,
+        solFeed: mockSolFeed.publicKey,
+        interestAssetFeed: mockInterestAssetFeed.publicKey,
       } as any)
       .instruction();
 
@@ -124,8 +173,8 @@ describe("PriceOracle Tests on Devnet", () => {
       .getPrice("InterestAsset")
       .accounts({
         oracleAccount: oracleAccount.publicKey,
-        solFeed: mockSolFeed,
-        interestAssetFeed: mockInterestAssetFeed,
+        solFeed: mockSolFeed.publicKey,
+        interestAssetFeed: mockInterestAssetFeed.publicKey,
       } as any)
       .instruction();
 
@@ -148,8 +197,8 @@ describe("PriceOracle Tests on Devnet", () => {
       .getPrice("InterestAsset")
       .accounts({
         oracleAccount: oracleAccount.publicKey,
-        solFeed: mockSolFeed,
-        interestAssetFeed: mockInterestAssetFeed,
+        solFeed: mockSolFeed.publicKey,
+        interestAssetFeed: mockInterestAssetFeed.publicKey,
       } as any)
       .instruction();
 
@@ -163,8 +212,8 @@ describe("PriceOracle Tests on Devnet", () => {
       .getPrice("InterestAsset")
       .accounts({
         oracleAccount: oracleAccount.publicKey,
-        solFeed: mockSolFeed,
-        interestAssetFeed: mockInterestAssetFeed,
+        solFeed: mockSolFeed.publicKey,
+        interestAssetFeed: mockInterestAssetFeed.publicKey,
       } as any)
       .instruction();
 
@@ -182,8 +231,8 @@ describe("PriceOracle Tests on Devnet", () => {
         .getPrice("INVALID")
         .accounts({
           oracleAccount: oracleAccount.publicKey,
-          solFeed: mockSolFeed,
-          interestAssetFeed: mockInterestAssetFeed,
+          solFeed: mockSolFeed.publicKey,
+          interestAssetFeed: mockInterestAssetFeed.publicKey,
         } as any)
         .instruction();
 

@@ -5,12 +5,16 @@ import { PriceOracle } from "../target/types/price_oracle";
 import {
   TOKEN_PROGRAM_ID,
   getOrCreateAssociatedTokenAccount,
+  createAssociatedTokenAccountInstruction,
+  createInitializeAccountInstruction,
 } from "@solana/spl-token";
 import { expect } from "chai";
 import {
   PublicKey,
   Keypair,
   SystemProgram,
+  Transaction,
+  TransactionInstruction,
 } from "@solana/web3.js";
 import BN from "bn.js";
 
@@ -42,7 +46,10 @@ describe("asset_manager", () => {
     return new BN(Math.floor(amount * Math.pow(10, decimals)));
   }
 
-  async function createAndSendV0Tx(txInstructions: anchor.web3.TransactionInstruction[], signers: anchor.web3.Keypair[] = []) {
+  async function createAndSendV0Tx(
+    txInstructions: anchor.web3.TransactionInstruction[],
+    signers: anchor.web3.Keypair[] = []
+  ) {
     let latestBlockhash = await provider.connection.getLatestBlockhash("confirmed");
     console.log("   ✅ - Fetched latest blockhash. Last valid block height:", latestBlockhash.lastValidBlockHeight);
 
@@ -96,25 +103,57 @@ describe("asset_manager", () => {
     );
     userXxusdAccount = userXxusdAccountInfo.address;
 
-    // Create Vault asset account
-    const vaultAssetAccountInfo = await getOrCreateAssociatedTokenAccount(
-      connection,
-      provider.wallet as any,
+    // Derive PDA for Vault asset account
+    const [vaultAssetPDA, vaultAssetBump] = await PublicKey.findProgramAddress(
+      [Buffer.from("vault"), jupsolMint.toBuffer()],
+      program.programId
+    );
+    vaultAssetAccount = vaultAssetPDA;
+
+    // Create Vault asset account as PDA
+    const createVaultAccountIx = SystemProgram.createAccountWithSeed({
+      fromPubkey: user,
+      newAccountPubkey: vaultAssetAccount,
+      basePubkey: user,
+      seed: "vault",
+      space: 165, // TokenAccount size (8 + 32 + 32 + 64 + 0)
+      lamports: await connection.getMinimumBalanceForRentExemption(165),
+      programId: TOKEN_PROGRAM_ID,
+    });
+
+    const initializeVaultAccountIx = createInitializeAccountInstruction(
+      vaultAssetAccount,
       jupsolMint,
       program.programId,
-      true
     );
-    vaultAssetAccount = vaultAssetAccountInfo.address;
 
-    // Create USDC Vault account
-    const xxusdVaultAccountInfo = await getOrCreateAssociatedTokenAccount(
-      connection,
-      provider.wallet as any,
+    await createAndSendV0Tx([createVaultAccountIx, initializeVaultAccountIx]);
+
+    // Derive PDA for xxusdVaultAccount
+    const [xxusdVaultPDA, xxusdVaultBump] = await PublicKey.findProgramAddress(
+      [Buffer.from("vault"), usdcMint.toBuffer()],
+      program.programId
+    );
+    xxusdVaultAccount = xxusdVaultPDA;
+
+    // Create USDC Vault account as PDA
+    const createXxusdVaultAccountIx = SystemProgram.createAccountWithSeed({
+      fromPubkey: user,
+      newAccountPubkey: xxusdVaultAccount,
+      basePubkey: user,
+      seed: "vault",
+      space: 165, // TokenAccount size (8 + 32 + 32 + 64 + 0)
+      lamports: await connection.getMinimumBalanceForRentExemption(165),
+      programId: TOKEN_PROGRAM_ID,
+    });
+
+    const initializeXxusdVaultAccountIx = createInitializeAccountInstruction(
+      xxusdVaultAccount,
       usdcMint,
       program.programId,
-      true
     );
-    xxusdVaultAccount = xxusdVaultAccountInfo.address;
+
+    await createAndSendV0Tx([createXxusdVaultAccountIx, initializeXxusdVaultAccountIx]);
 
     // Initialize Program State PDA
     const [statePda] = PublicKey.findProgramAddressSync(
@@ -152,10 +191,13 @@ describe("asset_manager", () => {
 
   it("Deposits asset successfully", async () => {
     const depositAmount = uiToNative(0.1, 9); // 0.1 jupSOL
-    const [userDepositPda] = PublicKey.findProgramAddressSync(
+
+    // Derive PDA for userDeposit
+    const [userDepositPdaDerived, userDepositBump] = await PublicKey.findProgramAddress(
       [Buffer.from("user_deposit"), user.toBuffer()],
       program.programId
     );
+    userDepositPda = userDepositPdaDerived;
 
     // Get price from PriceOracle
     const getPriceInstruction = await priceOracleProgram.methods
@@ -174,6 +216,7 @@ describe("asset_manager", () => {
         userAssetAccount: userAssetAccount,
         assetMint: jupsolMint,
         vaultAssetAccount: vaultAssetAccount,
+        userDeposit: userDepositPda,
         state: programState,
         oracle: oracleAccount.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
@@ -196,10 +239,11 @@ describe("asset_manager", () => {
   it("Mints and distributes xxUSD successfully", async () => {
     const assetValue = new BN(1000000); // 1,000,000
     const productPrice = new BN(500000); // 500,000
-    const [userDepositPda] = PublicKey.findProgramAddressSync(
+    const [userDepositPdaDerived] = await PublicKey.findProgramAddressSync(
       [Buffer.from("user_deposit"), user.toBuffer()],
       program.programId
     );
+    userDepositPda = userDepositPdaDerived;
 
     const mintAndDistributeInstruction = await program.methods
       .mintAndDistributeXxusd(assetValue, productPrice)

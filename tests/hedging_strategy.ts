@@ -15,15 +15,22 @@ import {
   mintTo,
   getAccount,
 } from "@solana/spl-token";
+import * as fs from 'fs';
 
 describe("hedging_strategy", () => {
   const HEDGING_AMOUNT = 1000000000; // 1 token，9 個小數位
-  const provider = anchor.AnchorProvider.env();
+  // Load the non-admin wallet
+  const secretKeyString = fs.readFileSync('/home/dc/.config/solana/nonAdmin.json', 'utf-8');
+  const secretKey = Uint8Array.from(JSON.parse(secretKeyString));
+  const wallet = Keypair.fromSecretKey(secretKey);
+
+  // Set up the provider with the loaded wallet
+  const provider = new anchor.AnchorProvider(provider.connection, new anchor.Wallet(wallet), provider.opts);
   anchor.setProvider(provider);
 
   const program = anchor.workspace.HedgingStrategy as Program<HedgingStrategy>;
   const priceOracleProgram = anchor.workspace.PriceOracle as Program<PriceOracle>;
-  const user = Keypair.generate();
+  const user = wallet; // Use the loaded wallet as the user
   const authority = provider.wallet.publicKey;
 
   let mint: PublicKey;
@@ -62,8 +69,8 @@ describe("hedging_strategy", () => {
     // 創建 mint
     mint = await createMint(
       provider.connection,
-      provider.wallet as any,
-      user.publicKey,
+      wallet,
+      wallet.publicKey,
       null,
       9
     );
@@ -71,15 +78,15 @@ describe("hedging_strategy", () => {
     // 創建 user token account
     userTokenAccount = await createAssociatedTokenAccount(
       provider.connection,
-      provider.wallet as any,
+      wallet,
       mint,
-      user.publicKey
+      wallet.publicKey
     );
 
     // 創建 hedging vault
     hedgingVault = await createAssociatedTokenAccount(
       provider.connection,
-      provider.wallet as any,
+      wallet,
       mint,
       program.programId
     );
@@ -87,10 +94,10 @@ describe("hedging_strategy", () => {
     // Mint tokens 給 user
     await mintTo(
       provider.connection,
-      provider.wallet as any,
+      wallet,
       mint,
       userTokenAccount,
-      user.publicKey,
+      wallet.publicKey,
       HEDGING_AMOUNT
     );
 

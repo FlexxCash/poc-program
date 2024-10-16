@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount};
 
-declare_id!("HqrUNQ7jUcKg1h2jhrYmKcM5HJY49uEMzV69dD1NYtHU");
+declare_id!("2vs4nFBw2vhoikYefLJpCcMy285TqGf7dmdwMyUz1N2j");
 
 #[program]
 pub mod hedging_strategy {

@@ -32,10 +32,10 @@ describe("AccessControl Tests on Devnet", () => {
     try {
       console.log("Fetching AccessControl account...");
       console.log("Program account keys:", Object.keys(program.account));
-      if (!(program.account as any).accessControl) {
+      if (!(program.account as any).access_control) {
         throw new Error("AccessControl account is not defined in the program");
       }
-      const account = await (program.account as any).accessControl.fetch(pubkey);
+      const account = await (program.account as any).access_control.fetch(pubkey);
       console.log("AccessControl account fetched successfully:", account);
       return account;
     } catch (error) {
@@ -132,14 +132,6 @@ describe("AccessControl Tests on Devnet", () => {
     console.log("Admin:", adminKeypair.publicKey.toBase58());
     console.log("Non-Admin:", nonAdminKeypair.publicKey.toBase58());
     console.log("Program ID:", program.programId.toBase58());
-
-    // 新增：檢查程序 ID 是否正確
-    const expectedProgramId = "5G3YjJ8PNAhPeDSZY1kbdPpYG21C8FRMwN1VuSFtR7Qe";
-    if (program.programId.toBase58() !== expectedProgramId) {
-      throw new Error(`Program ID mismatch. Expected: ${expectedProgramId}, Actual: ${program.programId.toBase58()}`);
-    }
-    console.log("Program ID verified successfully");
-
     await closeAccountIfExists(accessControlPDA);
     await ensureAccessControlInitialized();
   });
