@@ -1,16 +1,10 @@
 import * as anchor from "@coral-xyz/anchor";
-import { Program } from "@coral-xyz/anchor";
-import { PublicKey, Keypair, Transaction, VersionedTransaction } from "@solana/web3.js";
+import { Program, AnchorProvider } from "@coral-xyz/anchor";
+import { PublicKey, Keypair, SystemProgram } from "@solana/web3.js";
 import { expect } from "chai";
 import { AccessControl } from "../target/types/access_control";
 import * as fs from "fs";
 import * as path from "path";
-
-interface AccessControlAccount {
-  admin: PublicKey;
-  isPaused: boolean;
-  permissions: Array<[string, boolean]>;
-}
 
 const loadKeypair = (filePath: string): Keypair => {
   const absolutePath = path.resolve(filePath);
@@ -19,36 +13,13 @@ const loadKeypair = (filePath: string): Keypair => {
   return Keypair.fromSecretKey(secretKey);
 };
 
-class KeypairWallet implements anchor.Wallet {
-  constructor(public readonly payer: Keypair) {
-    this.payer = payer;
-  }
-
-  async signTransaction<T extends Transaction | VersionedTransaction>(tx: T): Promise<T> {
-    if (tx instanceof Transaction) {
-      tx.partialSign(this.payer);
-      return tx as T;
-    } else {
-      throw new Error("VersionedTransaction signing not implemented");
-    }
-  }
-
-  async signAllTransactions<T extends Transaction | VersionedTransaction>(txs: T[]): Promise<T[]> {
-    return Promise.all(txs.map(tx => this.signTransaction(tx)));
-  }
-
-  get publicKey(): PublicKey {
-    return this.payer.publicKey;
-  }
-}
-
-const adminKeypair: Keypair = loadKeypair("/home/dc/.config/solana/new_id.json");
+// 使用環境變數或配置文件來獲取管理員密鑰路徑
+const adminKeypairPath = process.env.ADMIN_KEYPAIR_PATH || "/home/dc/.config/solana/new_id.json";
+const adminKeypair: Keypair = loadKeypair(adminKeypairPath);
 const nonAdminKeypair: Keypair = loadKeypair("/home/dc/.config/solana/nonAdmin.json");
 
 describe("AccessControl Tests on Devnet", () => {
-  const wallet = new KeypairWallet(adminKeypair);
-  const connection = new anchor.web3.Connection("https://api.devnet.solana.com", "confirmed");
-  const provider = new anchor.AnchorProvider(connection, wallet, { commitment: "confirmed" });
+  const provider = AnchorProvider.env();
   anchor.setProvider(provider);
 
   const program = anchor.workspace.AccessControl as Program<AccessControl>;
@@ -56,42 +27,28 @@ describe("AccessControl Tests on Devnet", () => {
   let accessControlPDA: PublicKey;
   let bump: number;
 
-  const closeAccountIfExists = async (pubkey: PublicKey) => {
-    const accountInfo = await provider.connection.getAccountInfo(pubkey);
-    if (accountInfo !== null) {
-      console.log(`Closing existing account: ${pubkey.toBase58()}`);
-      try {
-        await program.methods.closeAccount()
-          .accounts({
-            accessControl: pubkey,
-            admin: adminKeypair.publicKey,
-          })
-          .signers([adminKeypair])
-          .rpc();
-        console.log("Account closed successfully");
-      } catch (error) {
-        console.error("Error closing account:", error);
-        throw error;
-      }
-    }
-  };
-
-  const getAccessControlAccount = async (pubkey: PublicKey): Promise<AccessControlAccount> => {
-    const accountInfo = await provider.connection.getAccountInfo(pubkey);
-    if (accountInfo === null) {
-      throw new Error(`AccessControl account not found at ${pubkey.toBase58()}. Please check initialization.`);
-    }
-    console.log("Raw account data:", accountInfo.data.toString('hex'));
+  // 獲取 AccessControl 帳戶資訊
+  const getAccessControlAccount = async (pubkey: PublicKey): Promise<any> => {
     try {
-      const decodedAccount = program.coder.accounts.decode("AccessControl", accountInfo.data);
-      console.log("Decoded account:", decodedAccount);
-      return decodedAccount as AccessControlAccount;
+      console.log("Fetching AccessControl account...");
+      console.log("Program account keys:", Object.keys(program.account));
+      if (!(program.account as any).accessControl) {
+        throw new Error("AccessControl account is not defined in the program");
+      }
+      const account = await (program.account as any).accessControl.fetch(pubkey);
+      console.log("AccessControl account fetched successfully:", account);
+      return account;
     } catch (error) {
-      console.error("Error decoding account data:", error);
+      console.error("Error fetching AccessControl account:", error);
+      if (error instanceof anchor.AnchorError) {
+        console.error("Error code:", error.error.errorCode.code);
+        console.error("Error message:", error.error.errorMessage);
+      }
       throw error;
     }
   };
 
+  // 初始化 AccessControl 帳戶
   const initializeAccessControl = async () => {
     console.log("Initializing AccessControl account...");
     try {
@@ -99,26 +56,34 @@ describe("AccessControl Tests on Devnet", () => {
         .accounts({
           accessControl: accessControlPDA,
           admin: adminKeypair.publicKey,
-          systemProgram: anchor.web3.SystemProgram.programId,
-        })
+          systemProgram: SystemProgram.programId,
+        } as any)
         .signers([adminKeypair])
         .rpc();
       console.log("AccessControl account initialized. Transaction signature:", tx);
-      
+
       await provider.connection.confirmTransaction(tx, "confirmed");
-      console.log("Transaction confirmed");
 
       const accountInfo = await provider.connection.getAccountInfo(accessControlPDA);
       if (accountInfo === null) {
         throw new Error("Failed to create AccessControl account");
       }
       console.log("AccessControl account created successfully");
+      
+      // 新增：獲取並輸出帳戶數據
+      const accessControlAccount = await getAccessControlAccount(accessControlPDA);
+      console.log("Initialized AccessControl account data:", accessControlAccount);
     } catch (error) {
       console.error("Error initializing AccessControl account:", error);
+      if (error instanceof anchor.AnchorError) {
+        console.error("Error code:", error.error.errorCode.code);
+        console.error("Error message:", error.error.errorMessage);
+      }
       throw error;
     }
   };
 
+  // 確保 AccessControl 帳戶已初始化
   const ensureAccessControlInitialized = async () => {
     const accountInfo = await provider.connection.getAccountInfo(accessControlPDA);
     if (accountInfo === null) {
@@ -126,6 +91,34 @@ describe("AccessControl Tests on Devnet", () => {
       await initializeAccessControl();
     } else {
       console.log("AccessControl account already exists");
+      // 新增：獲取並輸出現有帳戶數據
+      const accessControlAccount = await getAccessControlAccount(accessControlPDA);
+      console.log("Existing AccessControl account data:", accessControlAccount);
+    }
+  };
+
+  // 如果帳戶存在，則關閉它
+  const closeAccountIfExists = async (pubkey: PublicKey) => {
+    const accountInfo = await provider.connection.getAccountInfo(pubkey);
+    if (accountInfo !== null) {
+      console.log(`Closing existing account: ${pubkey.toBase58()}`);
+      try {
+        const tx = await program.methods.closeAccount()
+          .accounts({
+            accessControl: pubkey,
+            admin: adminKeypair.publicKey,
+          } as any)
+          .signers([adminKeypair])
+          .rpc();
+        console.log("Account closed successfully. Transaction signature:", tx);
+      } catch (error) {
+        console.error("Error closing account:", error);
+        if (error instanceof anchor.AnchorError) {
+          console.error("Error code:", error.error.errorCode.code);
+          console.error("Error message:", error.error.errorMessage);
+        }
+        throw error;
+      }
     }
   };
 
@@ -140,8 +133,24 @@ describe("AccessControl Tests on Devnet", () => {
     console.log("Non-Admin:", nonAdminKeypair.publicKey.toBase58());
     console.log("Program ID:", program.programId.toBase58());
 
+    // 新增：檢查程序 ID 是否正確
+    const expectedProgramId = "5G3YjJ8PNAhPeDSZY1kbdPpYG21C8FRMwN1VuSFtR7Qe";
+    if (program.programId.toBase58() !== expectedProgramId) {
+      throw new Error(`Program ID mismatch. Expected: ${expectedProgramId}, Actual: ${program.programId.toBase58()}`);
+    }
+    console.log("Program ID verified successfully");
+
     await closeAccountIfExists(accessControlPDA);
     await ensureAccessControlInitialized();
+  });
+
+  it("Verifies the correct PDA is generated", async () => {
+    const [expectedPDA, expectedBump] = await PublicKey.findProgramAddress(
+      [Buffer.from("access_control"), adminKeypair.publicKey.toBuffer()],
+      program.programId
+    );
+    expect(accessControlPDA.toString()).to.equal(expectedPDA.toString());
+    expect(bump).to.equal(expectedBump);
   });
 
   it("Initializes the access control account", async () => {
@@ -151,7 +160,7 @@ describe("AccessControl Tests on Devnet", () => {
       console.log("Actual AccessControl PDA:", accessControlPDA.toBase58());
 
       expect(accessControlAccount.admin.toString()).to.equal(adminKeypair.publicKey.toString());
-      expect(accessControlAccount.isPaused).to.be.false;
+      expect(accessControlAccount.is_paused).to.be.false;
       expect(accessControlAccount.permissions.length).to.equal(0);
     } catch (error) {
       console.error("Initialization error:", error);
@@ -166,13 +175,12 @@ describe("AccessControl Tests on Devnet", () => {
   });
 
   it("Fails when non-admin tries to activate emergency stop", async () => {
-    await ensureAccessControlInitialized();
     try {
       await program.methods.emergencyStop()
         .accounts({
           accessControl: accessControlPDA,
           admin: nonAdminKeypair.publicKey,
-        })
+        } as any)
         .signers([nonAdminKeypair])
         .rpc();
       expect.fail("Transaction should have failed");
@@ -184,18 +192,18 @@ describe("AccessControl Tests on Devnet", () => {
   });
 
   it("Activates emergency stop successfully", async () => {
-    await ensureAccessControlInitialized();
     try {
       await program.methods.emergencyStop()
         .accounts({
           accessControl: accessControlPDA,
           admin: adminKeypair.publicKey,
-        })
+        } as any)
         .signers([adminKeypair])
         .rpc();
       
       const accessControlAccount = await getAccessControlAccount(accessControlPDA);
-      expect(accessControlAccount.isPaused).to.be.true;
+      console.log("AccessControl account after emergency stop:", accessControlAccount);
+      expect(accessControlAccount.is_paused).to.be.true;
     } catch (error) {
       console.error("Emergency stop error:", error);
       throw error;
@@ -208,7 +216,7 @@ describe("AccessControl Tests on Devnet", () => {
         .accounts({
           accessControl: accessControlPDA,
           admin: adminKeypair.publicKey,
-        })
+        } as any)
         .signers([adminKeypair])
         .rpc();
       expect.fail("Transaction should have failed");
@@ -219,18 +227,36 @@ describe("AccessControl Tests on Devnet", () => {
     }
   });
 
+  it("Fails when non-admin tries to resume", async () => {
+    try {
+      await program.methods.resume()
+        .accounts({
+          accessControl: accessControlPDA,
+          admin: nonAdminKeypair.publicKey,
+        } as any)
+        .signers([nonAdminKeypair])
+        .rpc();
+      expect.fail("Transaction should have failed");
+    } catch (error: any) {
+      console.log("Error message:", error.message);
+      console.log("Error logs:", error.logs);
+      expect(error.message).to.include("Unauthorized");
+    }
+  });
+
   it("Resumes successfully", async () => {
     try {
       await program.methods.resume()
         .accounts({
           accessControl: accessControlPDA,
           admin: adminKeypair.publicKey,
-        })
+        } as any)
         .signers([adminKeypair])
         .rpc();
       
       const accessControlAccount = await getAccessControlAccount(accessControlPDA);
-      expect(accessControlAccount.isPaused).to.be.false;
+      console.log("AccessControl account after resume:", accessControlAccount);
+      expect(accessControlAccount.is_paused).to.be.false;
     } catch (error) {
       console.error("Resume error:", error);
       throw error;
@@ -243,7 +269,7 @@ describe("AccessControl Tests on Devnet", () => {
         .accounts({
           accessControl: accessControlPDA,
           admin: adminKeypair.publicKey,
-        })
+        } as any)
         .signers([adminKeypair])
         .rpc();
       expect.fail("Transaction should have failed");
